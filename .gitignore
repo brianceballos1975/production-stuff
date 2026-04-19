@@ -1,0 +1,19 @@
+# Credentials — never commit
+.env
+
+# Generated output — do not commit
+gavel_eps/
+layouts/
+backups/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Large spreadsheet/database files
+*.xlsm
+*.db
+*.db-shm
+*.db-wal
+*.csv
