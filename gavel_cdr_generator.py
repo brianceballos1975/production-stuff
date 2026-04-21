@@ -28,11 +28,27 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
+def _load_env(path: str = ".env") -> None:
+    env_file = Path(path)
+    if not env_file.exists():
+        env_file = Path(__file__).parent / path
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip())
+
+_load_env()
+
 import win32com.client
 
 # ── config ───────────────────────────────────────────────────────────────────
 
-API_KEY        = "cfaAl+ea1wj7jmWab9bbh2VSS+WBRC+Np+62K/0dT5g"
+API_KEY        = os.environ.get("SHIPSTATION_API_KEY", "")
 BASE_URL       = "https://api.shipstation.com/v2"
 PAGE_SIZE      = 100
 COREL_PROGID   = "CorelDRAW.Application.27"
