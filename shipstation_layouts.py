@@ -15,6 +15,7 @@ Output:
 """
 
 import argparse
+import base64
 import csv
 import io
 import json
@@ -50,8 +51,10 @@ from reportlab.pdfgen import canvas
 
 # ── config ──────────────────────────────────────────────────────────────────
 
-API_KEY    = os.environ.get("SHIPSTATION_API_KEY", "")
-BASE_URL   = "https://api.shipstation.com/v2"
+SS_KEY     = os.environ.get("SHIPSTATION_API_KEY", "")
+SS_SECRET  = os.environ.get("SHIPSTATION_API_SECRET", "")
+SS_AUTH    = "Basic " + base64.b64encode(f"{SS_KEY}:{SS_SECRET}".encode()).decode()
+BASE_URL   = "https://ssapi.shipstation.com"
 PAGE_SIZE  = 100
 
 # ── ShipStation API ──────────────────────────────────────────────────────────
@@ -59,42 +62,42 @@ PAGE_SIZE  = 100
 def ss_get(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
     if params:
-        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        qs = "&".join(f"{k}={urllib.request.quote(str(v))}" for k, v in params.items())
         url = f"{url}?{qs}"
-    req = urllib.request.Request(url, headers={"api-key": API_KEY, "Content-Type": "application/json"})
+    req = urllib.request.Request(url, headers={"Authorization": SS_AUTH})
     with urllib.request.urlopen(req) as r:
         return json.loads(r.read())
 
 
 def fetch_custom_shipments(days: int, status: str) -> list[dict]:
-    """Return all shipments with at least one item carrying a CustomizedURL."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Return all orders with at least one item carrying a CustomizedURL."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     params = {
-        "page_size": PAGE_SIZE,
-        "sort_dir": "desc",
-        "sort_by": "modified_at",
-        "modified_at_start": cutoff,
+        "pageSize":        PAGE_SIZE,
+        "sortBy":          "ModifyDate",
+        "sortDir":         "DESC",
+        "modifyDateStart": cutoff,
     }
+    # v1 status values: awaiting_shipment, awaiting_pickup, shipped, on_hold, cancelled
     if status != "all":
-        params["shipment_status"] = status  # v2 values: pending, label_purchased
+        params["orderStatus"] = status
 
     page, total_pages = 1, 1
     custom = []
 
     while page <= total_pages:
         params["page"] = page
-        data = ss_get("/shipments", params)
-        shipments = data.get("shipments", [])
+        data    = ss_get("/orders", params)
+        orders  = data.get("orders", [])
 
-        for s in shipments:
+        for s in orders:
             for item in s.get("items", []):
                 if any(o.get("name") == "CustomizedURL" for o in item.get("options", [])):
                     custom.append(s)
                     break
 
-        total = data.get("total", 0)
-        total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
-        print(f"  Page {page}/{total_pages} — {len(shipments)} shipments scanned, {len(custom)} custom so far")
+        total_pages = data.get("pages", 1)
+        print(f"  Page {page}/{total_pages} — {len(orders)} orders scanned, {len(custom)} custom so far")
         page += 1
 
     return custom
@@ -176,10 +179,10 @@ def draw_pdf(output_path: str, shipment: dict, item: dict, cust: dict):
     W, H = letter  # 8.5 x 11 inches
     c = canvas.Canvas(output_path, pagesize=letter)
 
-    order_num   = shipment.get("shipment_number", "")
-    ship_to     = shipment.get("ship_to", {})
+    order_num   = shipment.get("orderNumber", "")
+    ship_to     = shipment.get("shipTo", {})
     customer    = ship_to.get("name", "")
-    ship_date   = (shipment.get("ship_by_date") or shipment.get("ship_date") or "")[:10]
+    ship_date   = (shipment.get("shipByDate") or shipment.get("shipDate") or "")[:10]
     sku         = item.get("sku", "")
     product     = item.get("name", "")
     qty         = item.get("quantity", 1)
@@ -305,7 +308,7 @@ def draw_pdf(output_path: str, shipment: dict, item: dict, cust: dict):
         c.drawString(0.35 * inch, ty, "No customization text extracted.")
 
     # ── buyer notes ──
-    notes = (shipment.get("notes_from_buyer") or "").strip()
+    notes = (shipment.get("customerNotes") or "").strip()
     if notes and ty > 1.5 * inch:
         c.setStrokeColor(ACCENT_COLOR)
         c.setLineWidth(2)
@@ -362,8 +365,8 @@ def main():
     errors    = 0
 
     for ship_idx, shipment in enumerate(shipments, 1):
-        order_num = shipment.get("shipment_number", f"ship_{ship_idx}")
-        customer  = shipment.get("ship_to", {}).get("name", "")
+        order_num = shipment.get("orderNumber", f"order_{ship_idx}")
+        customer  = shipment.get("shipTo", {}).get("name", "")
         print(f"[{ship_idx}/{len(shipments)}] Order {order_num} — {customer}")
 
         custom_items = [

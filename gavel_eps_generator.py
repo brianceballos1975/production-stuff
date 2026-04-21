@@ -14,6 +14,7 @@ Options:
 """
 
 import argparse
+import base64
 import csv
 import io
 import json
@@ -51,8 +52,10 @@ if hasattr(sys.stderr, "reconfigure"):
 
 # ── config ────────────────────────────────────────────────────────────────────
 
-API_KEY       = os.environ.get("SHIPSTATION_API_KEY", "")
-BASE_URL      = "https://api.shipstation.com/v2"
+SS_KEY        = os.environ.get("SHIPSTATION_API_KEY", "")
+SS_SECRET     = os.environ.get("SHIPSTATION_API_SECRET", "")
+SS_AUTH       = "Basic " + base64.b64encode(f"{SS_KEY}:{SS_SECRET}".encode()).decode()
+BASE_URL      = "https://ssapi.shipstation.com"
 PAGE_SIZE     = 100
 TEMPLATE_PATH = r"C:\Users\breez\Downloads\gavelband_template.eps"
 
@@ -468,8 +471,8 @@ def build_layout_svg(items: list[dict]) -> str:
 # ── ShipStation helpers ───────────────────────────────────────────────────────
 
 def ss_get(path: str, params: dict) -> dict:
-    url = f"{BASE_URL}{path}?" + "&".join(f"{k}={v}" for k, v in params.items())
-    req = urllib.request.Request(url, headers={"api-key": API_KEY})
+    url = f"{BASE_URL}{path}?" + "&".join(f"{k}={urllib.request.quote(str(v))}" for k, v in params.items())
+    req = urllib.request.Request(url, headers={"Authorization": SS_AUTH})
     with urllib.request.urlopen(req) as r:
         return json.loads(r.read())
 
@@ -479,27 +482,26 @@ def is_gavel(sku: str) -> bool:
 
 
 def fetch_gavel_shipments(days: int) -> list[dict]:
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     params = {
-        "page_size": PAGE_SIZE,
-        "sort_dir": "desc",
-        "sort_by": "modified_at",
-        "modified_at_start": cutoff,
-        "shipment_status": "pending",
+        "pageSize":        PAGE_SIZE,
+        "sortBy":          "ModifyDate",
+        "sortDir":         "DESC",
+        "modifyDateStart": cutoff,
+        "orderStatus":     "awaiting_shipment",
     }
     page, total_pages, results = 1, 1, []
     while page <= total_pages:
         params["page"] = page
-        data = ss_get("/shipments", params)
-        for s in data.get("shipments", []):
+        data = ss_get("/orders", params)
+        for s in data.get("orders", []):
             for item in s.get("items", []):
                 if is_gavel(item.get("sku", "")) and any(
                     o.get("name") == "CustomizedURL" for o in item.get("options", [])
                 ):
                     results.append(s)
                     break
-        total = data.get("total", 0)
-        total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+        total_pages = data.get("pages", 1)
         print(f"  Page {page}/{total_pages} — {len(results)} gavel orders so far")
         page += 1
     return results
@@ -586,8 +588,8 @@ def main():
     errors       = 0
 
     for idx, ship in enumerate(shipments, 1):
-        order_num = ship.get("shipment_number", f"ship_{idx}")
-        customer  = (ship.get("ship_to") or {}).get("name", "")
+        order_num = ship.get("orderNumber", f"order_{idx}")
+        customer  = (ship.get("shipTo") or {}).get("name", "")
         print(f"[{idx}/{len(shipments)}] {order_num} — {customer}")
 
         gavel_items = [

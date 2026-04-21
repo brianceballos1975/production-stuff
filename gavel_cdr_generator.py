@@ -18,6 +18,7 @@ Output:
 """
 
 import argparse
+import base64
 import csv
 import io
 import json
@@ -48,8 +49,10 @@ import win32com.client
 
 # ── config ───────────────────────────────────────────────────────────────────
 
-API_KEY        = os.environ.get("SHIPSTATION_API_KEY", "")
-BASE_URL       = "https://api.shipstation.com/v2"
+SS_KEY         = os.environ.get("SHIPSTATION_API_KEY", "")
+SS_SECRET      = os.environ.get("SHIPSTATION_API_SECRET", "")
+SS_AUTH        = "Basic " + base64.b64encode(f"{SS_KEY}:{SS_SECRET}".encode()).decode()
+BASE_URL       = "https://ssapi.shipstation.com"
 PAGE_SIZE      = 100
 COREL_PROGID   = "CorelDRAW.Application.27"
 TEMPLATE_PATH  = r"C:\Users\breez\Downloads\gavelband_template.cdr"
@@ -68,8 +71,8 @@ CDR_CENTER_ALIGN = 2
 def ss_get(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
     if params:
-        url += "?" + "&".join(f"{k}={v}" for k, v in params.items())
-    req = urllib.request.Request(url, headers={"api-key": API_KEY})
+        url += "?" + "&".join(f"{k}={urllib.request.quote(str(v))}" for k, v in params.items())
+    req = urllib.request.Request(url, headers={"Authorization": SS_AUTH})
     with urllib.request.urlopen(req) as r:
         return json.loads(r.read())
 
@@ -79,29 +82,28 @@ def is_gavel_sku(sku: str) -> bool:
 
 
 def fetch_gavel_shipments(days: int) -> list[dict]:
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     params = {
-        "page_size": PAGE_SIZE,
-        "sort_dir": "desc",
-        "sort_by": "modified_at",
-        "modified_at_start": cutoff,
-        "shipment_status": "pending",
+        "pageSize":        PAGE_SIZE,
+        "sortBy":          "ModifyDate",
+        "sortDir":         "DESC",
+        "modifyDateStart": cutoff,
+        "orderStatus":     "awaiting_shipment",
     }
     page, total_pages = 1, 1
     results = []
 
     while page <= total_pages:
         params["page"] = page
-        data = ss_get("/shipments", params)
-        for s in data.get("shipments", []):
+        data = ss_get("/orders", params)
+        for s in data.get("orders", []):
             for item in s.get("items", []):
                 if is_gavel_sku(item.get("sku", "")) and any(
                     o.get("name") == "CustomizedURL" for o in item.get("options", [])
                 ):
                     results.append(s)
                     break
-        total = data.get("total", 0)
-        total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+        total_pages = data.get("pages", 1)
         print(f"  Page {page}/{total_pages} — {len(results)} gavel orders so far")
         page += 1
 
