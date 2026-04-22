@@ -498,16 +498,6 @@ def build_layout_svg(items: list[dict]) -> str:
                 f' fill="#000000">{safe}</text>'
             )
 
-        # ── small order/qty label in bottom-right corner of band ──────────
-        qty = item.get("qty", 1)
-        label = xml_escape(f'{item["order_number"]}  qty:{qty}')
-        out.append(
-            f'  <text'
-            f' x="{bx + BAND_W - 4:.3f}" y="{by + BAND_H - 3:.3f}"'
-            f' text-anchor="end"'
-            f' font-family="Helvetica, Arial, sans-serif"'
-            f' font-size="5" fill="#888888">{label}</text>'
-        )
 
     out.append('</svg>')
     return "\n".join(out)
