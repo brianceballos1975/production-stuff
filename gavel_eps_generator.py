@@ -686,7 +686,7 @@ def main():
 
                 # Individual SVG file
                 write_individual_svg(svg_path_i, text_lines, font)
-                generated_svgs.append(svg_path_i)
+                generated_svgs.append(Path(svg_path_i))
                 print(f"     Individual SVG saved → {svg_name}")
                 ok += 1
                 order_had_success = True
