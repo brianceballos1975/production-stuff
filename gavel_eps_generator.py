@@ -636,7 +636,8 @@ def main():
 
     shipments = new_shipments
 
-    all_items    = []
+    all_items        = []
+    generated_svgs   = []   # track only files created this run
     summary      = []
     order_nums   = []   # unique order numbers for Trello description
     ok           = 0
@@ -685,6 +686,7 @@ def main():
 
                 # Individual SVG file
                 write_individual_svg(svg_path_i, text_lines, font)
+                generated_svgs.append(svg_path_i)
                 print(f"     Individual SVG saved → {svg_name}")
                 ok += 1
                 order_had_success = True
@@ -759,15 +761,8 @@ def main():
             print(f"  Card created → {card_url}")
         if card_id:
             # Collect all SVGs: bulk layout first, then individual files
-            svgs_to_upload = [layout_path] + sorted(out_dir.glob("*.svg"))
-            # Remove duplicates (layout already in glob) while preserving order
-            seen = set()
-            upload_list = []
-            for p in svgs_to_upload:
-                if p not in seen:
-                    seen.add(p)
-                    upload_list.append(p)
-
+            # Upload only files created this run: layout first, then individual SVGs
+            upload_list = [layout_path] + generated_svgs
             for i, svg in enumerate(upload_list, 1):
                 print(f"  [{i}/{len(upload_list)}] Uploading {svg.name}...", end="", flush=True)
                 trello_attach_svg(card_id, str(svg))
