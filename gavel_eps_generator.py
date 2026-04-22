@@ -298,6 +298,40 @@ def _trello_post(path: str, data: dict) -> dict:
         return json.loads(r.read())
 
 
+def trello_get_processed_order_numbers() -> set[str]:
+    """
+    Return every order number already recorded on the Customs board.
+    Scans all card titles AND descriptions for strings that look like
+    Amazon order numbers (e.g. 112-4450347-1581840).
+    """
+    import re
+    ORDER_RE = re.compile(r'\b\d{3}-\d{7}-\d{7}\b')
+
+    try:
+        boards = _trello_get("/members/me/boards", fields="name")
+        board  = next((b for b in boards if b["name"].lower() == TRELLO_BOARD_NAME.lower()), None)
+        if not board:
+            return set()
+
+        # Fetch all open cards on the board across every list
+        cards = _trello_get(
+            f"/boards/{board['id']}/cards",
+            fields="name,desc",
+        )
+
+        found = set()
+        for card in cards:
+            text = (card.get("name", "") + "\n" + card.get("desc", ""))
+            for m in ORDER_RE.finditer(text):
+                found.add(m.group())
+
+        return found
+
+    except Exception as e:
+        print(f"  ⚠  Could not fetch Trello history (will process all orders): {e}")
+        return set()
+
+
 def trello_create_gavel_card(order_numbers: list[str]) -> tuple[str, str]:
     """
     Create a Trello card on the 'customs' board under 'Test List'.
@@ -575,11 +609,31 @@ def main():
 
     print("Fetching gavel orders from ShipStation...")
     shipments = fetch_gavel_shipments(days=args.days)
-    print(f"\nFound {len(shipments)} gavel shipment(s)\n")
+    print(f"\nFound {len(shipments)} gavel order(s) awaiting shipment")
 
     if not shipments:
         print("Nothing to do.")
         return
+
+    # Cross-check Trello — skip orders already on the Customs board
+    print("\nCross-checking Trello Customs board for already-processed orders...")
+    already_in_trello = trello_get_processed_order_numbers()
+    print(f"  {len(already_in_trello)} order number(s) found on Trello board")
+
+    new_shipments = [
+        s for s in shipments
+        if s.get("orderNumber", "") not in already_in_trello
+    ]
+    skipped = len(shipments) - len(new_shipments)
+    if skipped:
+        print(f"  Skipping {skipped} already-processed order(s)")
+    print(f"  {len(new_shipments)} new order(s) to process\n")
+
+    if not new_shipments:
+        print("All orders already on Trello — nothing to do.")
+        return
+
+    shipments = new_shipments
 
     all_items    = []
     summary      = []
