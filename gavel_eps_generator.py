@@ -63,7 +63,7 @@ TEMPLATE_PATH = r"C:\Users\breez\Downloads\gavelband_template.eps"
 TRELLO_API_KEY     = os.environ.get("TRELLO_API_KEY", "")
 TRELLO_TOKEN       = os.environ.get("TRELLO_TOKEN", "")
 TRELLO_BOARD_NAME  = "customs"
-TRELLO_LIST_NAME   = "Test List"
+TRELLO_LIST_NAME   = "Customs Ready For Production"
 
 # ── coordinate system: 1 SVG user unit = 1 point (1/72 inch) ─────────────────
 
@@ -498,6 +498,17 @@ def build_layout_svg(items: list[dict]) -> str:
                 f' fill="#000000">{safe}</text>'
             )
 
+        # ── small order/qty label in bottom-right corner of band ──────────
+        qty = item.get("qty", 1)
+        label = xml_escape(f'{item["order_number"]}  qty:{qty}')
+        out.append(
+            f'  <text'
+            f' x="{bx + BAND_W - 4:.3f}" y="{by + BAND_H - 3:.3f}"'
+            f' text-anchor="end"'
+            f' font-family="Helvetica, Arial, sans-serif"'
+            f' font-size="5" fill="#888888">{label}</text>'
+        )
+
     out.append('</svg>')
     return "\n".join(out)
 
@@ -725,11 +736,19 @@ def main():
             order_nums.append(order_num)
 
     # Build and write the bulk SVG layout file
+    # Expand each item by its quantity — every physical band gets its own slot
+    layout_items = []
+    for item in all_items:
+        qty = item.get("qty", 1)
+        for _ in range(max(qty, 1)):
+            layout_items.append(item)
+
     items_per_page = COLS * ROWS
-    num_pages = max(1, (len(all_items) + items_per_page - 1) // items_per_page)
-    print(f"\nBuilding bulk SVG layout: {len(all_items)} items across {num_pages} page(s)...")
+    num_pages = max(1, (len(layout_items) + items_per_page - 1) // items_per_page)
+    total_bands = len(layout_items)
+    print(f"\nBuilding bulk SVG layout: {total_bands} band(s) ({len(all_items)} unique design(s)) across {num_pages} page(s)...")
     layout_path = out_dir / "gavel_layout.svg"
-    layout_path.write_text(build_layout_svg(all_items), encoding="utf-8")
+    layout_path.write_text(build_layout_svg(layout_items), encoding="utf-8")
     print(f"Bulk layout saved → {layout_path.resolve()}")
 
     # Write summary CSV
