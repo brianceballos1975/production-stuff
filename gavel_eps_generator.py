@@ -196,10 +196,22 @@ def _split_subpaths(d: str) -> list[str]:
     one per M command.  CorelDRAW locks compound paths (multiple M commands
     in a single <path>); splitting them into separate <path> elements
     imports each as a normal unlocked Curve object.
+
+    Also strips Illustrator's trailing h0Z / H0Z artifact (a zero-length
+    horizontal lineto before the close-path).  CorelDRAW treats it as a
+    second sub-element and groups the path into a "Group of 2 Objects".
     """
-    # Split just before each M that follows a Z (or at start of string)
+    # Split just before each M that follows a Z
     parts = _re.split(r'(?<=Z)\s*(?=M)', d.strip())
-    return [p.strip() for p in parts if p.strip()]
+    result = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # Remove h0Z / H0Z (zero-length line Illustrator appends before Z)
+        p = _re.sub(r'\s*[Hh]0\s*(?=Z)', '', p)
+        result.append(p)
+    return result
 
 
 def _offset_path_d(d: str, ox: float, oy: float) -> str:
