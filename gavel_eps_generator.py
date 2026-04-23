@@ -190,6 +190,18 @@ def _load_band_path() -> tuple[str, float]:
     return _band_path_cache
 
 
+def _split_subpaths(d: str) -> list[str]:
+    """
+    Split a compound SVG path d-string into individual subpath strings,
+    one per M command.  CorelDRAW locks compound paths (multiple M commands
+    in a single <path>); splitting them into separate <path> elements
+    imports each as a normal unlocked Curve object.
+    """
+    # Split just before each M that follows a Z (or at start of string)
+    parts = _re.split(r'(?<=Z)\s*(?=M)', d.strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
 def _offset_path_d(d: str, ox: float, oy: float) -> str:
     """
     Return SVG path d-string with all ABSOLUTE coordinate commands shifted by
@@ -273,14 +285,15 @@ def write_individual_svg(output_path: str, text_lines: list[str], font_name: str
         out.append(f"    @import url('https://fonts.googleapis.com/css2?family={fam_param}&display=swap');")
         out.append('  ]]></style></defs>')
 
-    # Band outline at origin (0, 0) — path d is taken directly from the SVG template.
-    # fill="#ffffff" fill-opacity="0" instead of fill="none" — CorelDRAW
-    # auto-locks stroke-only (fill="none") paths as guide objects.
-    out.append(
-        f'  <path d="{band_d}"'
-        f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
-        f' stroke-width="{stroke_w:.3f}"/>'
-    )
+    # Band outline — one <path> per subpath so CorelDRAW imports each as a
+    # normal unlocked Curve. A single compound path (<path> with multiple M
+    # commands) gets split by CorelDRAW into locked objects.
+    for sp in _split_subpaths(band_d):
+        out.append(
+            f'  <path d="{sp}"'
+            f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
+            f' stroke-width="{stroke_w:.3f}"/>'
+        )
 
     # Text lines
     ff = xml_escape_attr(font_name) + ", Helvetica, Arial, sans-serif"
@@ -506,15 +519,16 @@ def build_layout_svg(items: list[dict]) -> str:
         # Baseline of first line — centers text block vertically on band
         baseline_y = by + BAND_CY - block_h / 2 + fs * 0.75
 
-        # ── band outline — coordinates offset directly (no transform attribute)
-        # transform="translate()" causes CorelDRAW to wrap paths in locked groups.
-        # _offset_path_d() rewrites absolute coordinates so no transform is needed.
-        d_offset = _offset_path_d(band_d, bx, by)
-        out.append(
-            f'  <path d="{d_offset}"'
-            f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
-            f' stroke-width="{stroke_w:.3f}"/>'
-        )
+        # ── band outline — one <path> per subpath, coordinates offset directly.
+        # Splitting the compound path prevents CorelDRAW from creating locked
+        # groups. No transform attributes so CorelDRAW won't wrap in a group.
+        for sp in _split_subpaths(band_d):
+            sp_off = _offset_path_d(sp, bx, by)
+            out.append(
+                f'  <path d="{sp_off}"'
+                f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
+                f' stroke-width="{stroke_w:.3f}"/>'
+            )
 
         # ── text lines (one <text> per line for CorelDRAW compatibility) ──
         ff = xml_escape_attr(font_name) + ", Helvetica, Arial, sans-serif"
