@@ -190,6 +190,56 @@ def _load_band_path() -> tuple[str, float]:
     return _band_path_cache
 
 
+def _offset_path_d(d: str, ox: float, oy: float) -> str:
+    """
+    Return SVG path d-string with all ABSOLUTE coordinate commands shifted by
+    (ox, oy).  Relative commands (lowercase) are left unchanged.
+
+    Handles: M L H V C S Q T A Z  (and their lowercase relatives).
+    Using direct coordinate offsets avoids transform="translate()" which
+    causes CorelDRAW to wrap the path in a locked group.
+    """
+    if ox == 0.0 and oy == 0.0:
+        return d
+
+    NUM_RE = _re.compile(r'[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?')
+    segments = _re.split(r'(?=[MmLlHhVvCcSsQqTtAaZz])', d.strip())
+    out = []
+
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        cmd  = seg[0]
+        nums = [float(x) for x in NUM_RE.findall(seg[1:])]
+
+        if cmd == 'M':    # x y [x y …]
+            n2 = [v + (ox if i % 2 == 0 else oy) for i, v in enumerate(nums)]
+        elif cmd == 'L':  # x y [x y …]
+            n2 = [v + (ox if i % 2 == 0 else oy) for i, v in enumerate(nums)]
+        elif cmd == 'H':  # x [x …]  — horizontal only
+            n2 = [v + ox for v in nums]
+        elif cmd == 'V':  # y [y …]  — vertical only
+            n2 = [v + oy for v in nums]
+        elif cmd in ('C', 'S', 'Q', 'T'):  # all use x,y pairs throughout
+            n2 = [v + (ox if i % 2 == 0 else oy) for i, v in enumerate(nums)]
+        elif cmd == 'A':  # rx ry x-rot large-arc sweep x y  (groups of 7)
+            n2 = list(nums)
+            for j in range(0, len(n2), 7):
+                if j + 5 < len(n2): n2[j + 5] += ox
+                if j + 6 < len(n2): n2[j + 6] += oy
+        elif cmd in 'Zz':
+            out.append(cmd)
+            continue
+        else:              # relative command — pass through unchanged
+            out.append(seg)
+            continue
+
+        out.append(cmd + ' '.join(f'{v:.3f}' for v in n2))
+
+    return ''.join(out)
+
+
 # ── Individual SVG writer ─────────────────────────────────────────────────────
 
 def write_individual_svg(output_path: str, text_lines: list[str], font_name: str) -> None:
@@ -384,9 +434,9 @@ def build_layout_svg(items: list[dict]) -> str:
     """
     Arrange all gavel items on 24" × 12" pages (3 cols × 10 rows, 0.25" gap).
 
-    Band outlines use transform="translate(bx,by)" on the <path> element so
-    the path d-string is taken verbatim from the SVG template with no coordinate
-    rewriting. Text coordinates remain fully absolute (no group transforms).
+    Band outlines use _offset_path_d() to bake (bx,by) directly into the path
+    coordinates — no transform attributes anywhere so CorelDRAW cannot create
+    locked wrapper groups. Text coordinates are also fully absolute.
     Each line of text gets its own <text> element so CorelDRAW's SVG importer
     cannot misinterpret inherited text-anchor or tspan dy values.
     """
@@ -456,12 +506,12 @@ def build_layout_svg(items: list[dict]) -> str:
         # Baseline of first line — centers text block vertically on band
         baseline_y = by + BAND_CY - block_h / 2 + fs * 0.75
 
-        # ── band outline — path d from SVG template, positioned via transform ──
-        # transform="translate(bx,by)" on the <path> only (not a group) is safe
-        # in CorelDRAW. fill-opacity=0 prevents CorelDRAW from locking the path.
+        # ── band outline — coordinates offset directly (no transform attribute)
+        # transform="translate()" causes CorelDRAW to wrap paths in locked groups.
+        # _offset_path_d() rewrites absolute coordinates so no transform is needed.
+        d_offset = _offset_path_d(band_d, bx, by)
         out.append(
-            f'  <path d="{band_d}"'
-            f' transform="translate({bx:.3f},{by:.3f})"'
+            f'  <path d="{d_offset}"'
             f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
             f' stroke-width="{stroke_w:.3f}"/>'
         )
