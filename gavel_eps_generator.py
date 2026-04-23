@@ -270,20 +270,14 @@ def write_individual_svg(output_path: str, text_lines: list[str], font_name: str
     baseline_y = BAND_CY - block_h / 2 + fs * 0.75   # first baseline (relative to band)
     cx         = BAND_CX                               # horizontal center
 
-    google_families = [font_name] if is_google_font(font_name) else []
-
     out = []
     out.append('<?xml version="1.0" encoding="UTF-8"?>')
     out.append('<svg xmlns="http://www.w3.org/2000/svg"')
     out.append('     xmlns:xlink="http://www.w3.org/1999/xlink"')
     out.append(f'     width="{BAND_W/PT:.6f}in" height="{BAND_H/PT:.6f}in"')
     out.append(f'     viewBox="0 0 {BAND_W:.3f} {BAND_H:.3f}">')
-
-    if google_families:
-        fam_param = google_families[0].replace(" ", "+")
-        out.append('  <defs><style><![CDATA[')
-        out.append(f"    @import url('https://fonts.googleapis.com/css2?family={fam_param}&display=swap');")
-        out.append('  ]]></style></defs>')
+    # No <defs><style> block — CorelDRAW imports it as a locked "Group of 2 Objects".
+    # Font fallback in each <text> font-family attribute handles rendering.
 
     # Band outline — one <path> per subpath so CorelDRAW imports each as a
     # normal unlocked Curve. A single compound path (<path> with multiple M
@@ -465,25 +459,14 @@ def build_layout_svg(items: list[dict]) -> str:
     margin_x = (PAGE_W - grid_w) / 2
     margin_y = (PAGE_H - grid_h) / 2
 
-    # Google Fonts @import
-    google_families = sorted({
-        item["font"] for item in items if is_google_font(item["font"])
-    })
-
     out = []
     out.append('<?xml version="1.0" encoding="UTF-8"?>')
     out.append('<svg xmlns="http://www.w3.org/2000/svg"')
     out.append('     xmlns:xlink="http://www.w3.org/1999/xlink"')
     out.append(f'     width="{24}in" height="{num_pages * 12}in"')
     out.append(f'     viewBox="0 0 {PAGE_W:.3f} {total_h:.3f}">')
-
-    if google_families:
-        fam_param = "&family=".join(f.replace(" ", "+") for f in google_families)
-        out.append('  <defs><style><![CDATA[')
-        out.append(
-            f"    @import url('https://fonts.googleapis.com/css2?family={fam_param}&display=swap');"
-        )
-        out.append('  ]]></style></defs>')
+    # No <defs><style> block — CorelDRAW imports it as a locked "Group of 2 Objects".
+    # Font fallback in each <text> font-family attribute handles rendering.
 
     # Page-break guide lines
     for p in range(1, num_pages):
