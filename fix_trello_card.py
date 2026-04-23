@@ -60,6 +60,24 @@ def trello_delete(path):
         return r.read()
 
 
+def trello_put(path, data):
+    """Update a Trello resource via PUT (form-encoded body)."""
+    base = {"key": TRELLO_API_KEY, "token": TRELLO_TOKEN}
+    base.update(data)
+    body = "&".join(
+        f"{k}={urllib.request.quote(str(v), safe='')}" for k, v in base.items()
+    )
+    url = TRELLO_BASE + path
+    req = urllib.request.Request(
+        url,
+        data=body.encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="PUT",
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read())
+
+
 def trello_attach(card_id, file_path):
     filename = Path(file_path).name
     boundary = b"FixBoundaryXx7zA9qPmN"
@@ -139,9 +157,10 @@ def main():
     else:
         print("No attachments to remove.")
 
-    # 5. Build upload list from summary.csv
-    layout_svg = GAVEL_EPS_DIR / "gavel_layout.svg"
+    # 5. Read summary.csv — build upload list and collect order numbers
+    layout_svg  = GAVEL_EPS_DIR / "gavel_layout.svg"
     upload_list = []
+    order_nums  = []   # unique order numbers from this run
 
     if layout_svg.exists():
         upload_list.append(layout_svg)
@@ -157,10 +176,13 @@ def main():
                         upload_list.append(p)
                     else:
                         print(f"  WARNING: SVG not found on disk — {row['svg_file']}")
+                    onum = row.get("order_number", "").strip()
+                    if onum and onum not in order_nums:
+                        order_nums.append(onum)
     else:
         print(f"WARNING: summary.csv not found at {SUMMARY_CSV}")
 
-    # Deduplicate while preserving order
+    # Deduplicate upload list while preserving order
     seen = set()
     deduped = []
     for p in upload_list:
@@ -169,6 +191,16 @@ def main():
             deduped.append(p)
     upload_list = deduped
 
+    # 6. Update card description to match summary.csv order numbers
+    if order_nums:
+        new_desc = "\n".join(order_nums)
+        print(f"\nUpdating card description ({len(order_nums)} order number(s))...")
+        trello_put(f"/cards/{card_id}", {"desc": new_desc})
+        print("  Description updated ✓")
+    else:
+        print("\nWARNING: No order numbers found in summary.csv — description not updated.")
+
+    # 7. Upload corrected attachments
     print(f"\nUploading {len(upload_list)} file(s)...")
     for i, svg in enumerate(upload_list, 1):
         print(f"  [{i}/{len(upload_list)}] {svg.name}...", end="", flush=True)
