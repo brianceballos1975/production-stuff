@@ -19,7 +19,6 @@ import csv
 import io
 import json
 import os
-import struct
 import sys
 import urllib.request
 import zipfile
@@ -57,7 +56,7 @@ SS_SECRET     = os.environ.get("SHIPSTATION_API_SECRET", "")
 SS_AUTH       = "Basic " + base64.b64encode(f"{SS_KEY}:{SS_SECRET}".encode()).decode()
 BASE_URL      = "https://ssapi.shipstation.com"
 PAGE_SIZE     = 100
-TEMPLATE_PATH = r"C:\Users\breez\Downloads\gavelband_template.eps"
+TEMPLATE_PATH = r"C:\Users\breez\Downloads\gavelband_template.svg"
 
 # ── Trello ────────────────────────────────────────────────────────────────────
 TRELLO_API_KEY     = os.environ.get("TRELLO_API_KEY", "")
@@ -69,11 +68,11 @@ TRELLO_LIST_NAME   = "Customs Ready For Production"
 
 PT = 72.0   # points per inch
 
-# Band dimensions in points (from template BoundingBox)
-BAND_W  = 495.25
-BAND_H  = 68.65
-BAND_CX = BAND_W / 2   # 247.625 pt  horizontal center
-BAND_CY = BAND_H / 2   # 34.325  pt  vertical center
+# Band dimensions from template SVG viewBox ("0 0 495 68.4")
+BAND_W  = 495.0
+BAND_H  = 68.4
+BAND_CX = BAND_W / 2   # 247.5 pt  horizontal center
+BAND_CY = BAND_H / 2   # 34.2  pt  vertical center
 
 # Layout grid (all in points)
 PAGE_W = 24 * PT        # 1728 pt
@@ -144,73 +143,51 @@ def xml_escape(text: str) -> str:
 
 # ── Band path extraction ──────────────────────────────────────────────────────
 
-def _load_band_commands() -> tuple[list, float]:
+import xml.etree.ElementTree as ET
+import re as _re
+
+_band_path_cache: tuple[str, float] | None = None
+
+def _load_band_path() -> tuple[str, float]:
     """
-    Parse the band outline from the Illustrator template into a list of
-    (svg_op, [float_args]) tuples and the stroke width in points.
-
-    Template path coords are already in points, Y-down — no conversion needed.
+    Read the band outline path from the SVG template.
+    Returns (d_string, stroke_width).
+    Cached after first call so the file is only parsed once per run.
     """
-    with open(TEMPLATE_PATH, "rb") as f:
-        raw = f.read()
-    if raw[:4] == b"\xc5\xd0\xd3\xc6":
-        ps_offset = struct.unpack_from("<I", raw, 4)[0]
-        ps_length = struct.unpack_from("<I", raw, 8)[0]
-        ps = raw[ps_offset : ps_offset + ps_length].decode("latin-1")
-    else:
-        ps = raw.decode("latin-1")
+    global _band_path_cache
+    if _band_path_cache is not None:
+        return _band_path_cache
 
-    page_start = ps.find("%%Page:")
-    idx_sop    = ps.find("false sop", page_start)
-    chunk      = ps[page_start:idx_sop]
-    idx_clp    = chunk.rfind("clp\r\n")
-    drawing    = chunk[idx_clp + 5:].strip()
+    tree = ET.parse(TEMPLATE_PATH)
+    root = tree.getroot()
+    ns   = {"svg": "http://www.w3.org/2000/svg"}
 
-    commands = []
-    stroke_w  = BAND_STROKE_WIDTH
+    path_el = root.find(".//svg:path", ns)
+    if path_el is None:
+        path_el = root.find(".//path")          # fallback: no namespace
+    if path_el is None:
+        raise ValueError(f"No <path> element found in {TEMPLATE_PATH}")
 
-    for raw_line in drawing.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("%"):
-            continue
-        tokens = line.split()
-        if not tokens:
-            continue
-        op   = tokens[-1]
-        args = tokens[:-1]
+    d = path_el.get("d", "")
 
-        if op == "lw":
-            stroke_w = float(args[0])
-        elif op == "mo":
-            commands.append(("M", [float(args[0]), float(args[1])]))
-        elif op == "li":
-            commands.append(("L", [float(args[0]), float(args[1])]))
-        elif op == "cv":
-            commands.append(("C", [float(a) for a in args]))
-        elif op == "cp":
-            commands.append(("Z", []))
-        # lc, lj, ml, dsh, sadj → not needed in SVG
+    # Try to extract stroke-width from inline style or the <style> block.
+    # Use explicit 'is not None' checks — ElementTree elements are falsy when
+    # they have no child elements (e.g. a <style> with only text content).
+    stroke_w = BAND_STROKE_WIDTH
+    style_el = root.find(".//svg:style", ns)
+    if style_el is None:
+        style_el = root.find(".//style")
+    sources = [path_el.get("style", "")]
+    if style_el is not None and style_el.text:
+        sources.append(style_el.text)
+    for src in sources:
+        m = _re.search(r'stroke-width\s*:\s*(\d*\.?\d+)', src)
+        if m:
+            stroke_w = float(m.group(1))
+            break
 
-    return commands, stroke_w
-
-
-def _band_path_d(commands: list, ox: float, oy: float) -> str:
-    """Render band path offset by (ox, oy) as an SVG path d-string."""
-    parts = []
-    for op, args in commands:
-        if op == "M":
-            parts.append(f"M {args[0]+ox:.3f} {args[1]+oy:.3f}")
-        elif op == "L":
-            parts.append(f"L {args[0]+ox:.3f} {args[1]+oy:.3f}")
-        elif op == "C":
-            parts.append(
-                f"C {args[0]+ox:.3f} {args[1]+oy:.3f} "
-                f"{args[2]+ox:.3f} {args[3]+oy:.3f} "
-                f"{args[4]+ox:.3f} {args[5]+oy:.3f}"
-            )
-        elif op == "Z":
-            parts.append("Z")
-    return " ".join(parts)
+    _band_path_cache = (d, stroke_w)
+    return _band_path_cache
 
 
 # ── Individual SVG writer ─────────────────────────────────────────────────────
@@ -218,11 +195,11 @@ def _band_path_d(commands: list, ox: float, oy: float) -> str:
 def write_individual_svg(output_path: str, text_lines: list[str], font_name: str) -> None:
     """
     Write a single-band SVG file for one gavel order item.
-    Physical size matches the band: 6.878" × 0.954" (495.25 × 68.65 pt).
+    Physical size matches the band: {BAND_W/PT:.4f}" × {BAND_H/PT:.4f}" ({BAND_W} × {BAND_H} pt).
     Uses the same absolute-coordinate, one-<text>-per-line approach as the
     bulk layout so it opens correctly in both Illustrator and CorelDRAW.
     """
-    band_cmds, stroke_w = _load_band_commands()
+    band_d, stroke_w = _load_band_path()
 
     n          = len(text_lines)
     fs         = FONT_SIZE_PT.get(n, 10.0)
@@ -246,12 +223,11 @@ def write_individual_svg(output_path: str, text_lines: list[str], font_name: str
         out.append(f"    @import url('https://fonts.googleapis.com/css2?family={fam_param}&display=swap');")
         out.append('  ]]></style></defs>')
 
-    # Band outline at origin (0, 0)
+    # Band outline at origin (0, 0) — path d is taken directly from the SVG template.
     # fill="#ffffff" fill-opacity="0" instead of fill="none" — CorelDRAW
     # auto-locks stroke-only (fill="none") paths as guide objects.
-    d = _band_path_d(band_cmds, 0.0, 0.0)
     out.append(
-        f'  <path d="{d}"'
+        f'  <path d="{band_d}"'
         f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
         f' stroke-width="{stroke_w:.3f}"/>'
     )
@@ -408,11 +384,13 @@ def build_layout_svg(items: list[dict]) -> str:
     """
     Arrange all gavel items on 24" × 12" pages (3 cols × 10 rows, 0.25" gap).
 
-    All coordinates are absolute points (no transforms, no <use>, no <tspan>).
+    Band outlines use transform="translate(bx,by)" on the <path> element so
+    the path d-string is taken verbatim from the SVG template with no coordinate
+    rewriting. Text coordinates remain fully absolute (no group transforms).
     Each line of text gets its own <text> element so CorelDRAW's SVG importer
     cannot misinterpret inherited text-anchor or tspan dy values.
     """
-    band_cmds, stroke_w = _load_band_commands()
+    band_d, stroke_w = _load_band_path()
 
     items_per_page = COLS * ROWS
     num_pages      = max(1, (len(items) + items_per_page - 1) // items_per_page)
@@ -478,12 +456,12 @@ def build_layout_svg(items: list[dict]) -> str:
         # Baseline of first line — centers text block vertically on band
         baseline_y = by + BAND_CY - block_h / 2 + fs * 0.75
 
-        # ── band outline (inlined, absolute coordinates) ──────────────────
-        # fill="#ffffff" fill-opacity="0" instead of fill="none" — CorelDRAW
-        # auto-locks stroke-only (fill="none") paths as guide objects.
-        d = _band_path_d(band_cmds, bx, by)
+        # ── band outline — path d from SVG template, positioned via transform ──
+        # transform="translate(bx,by)" on the <path> only (not a group) is safe
+        # in CorelDRAW. fill-opacity=0 prevents CorelDRAW from locking the path.
         out.append(
-            f'  <path d="{d}"'
+            f'  <path d="{band_d}"'
+            f' transform="translate({bx:.3f},{by:.3f})"'
             f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
             f' stroke-width="{stroke_w:.3f}"/>'
         )
