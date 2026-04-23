@@ -297,7 +297,7 @@ def write_individual_svg(output_path: str, text_lines: list[str], font_name: str
     for sp in _split_subpaths(band_d):
         out.append(
             f'  <path d="{sp}"'
-            f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
+            f' fill="white" stroke="{BAND_STROKE_COLOR}"'
             f' stroke-width="{stroke_w:.3f}"/>'
         )
 
@@ -521,7 +521,7 @@ def build_layout_svg(items: list[dict]) -> str:
             sp_off = _offset_path_d(sp, bx, by)
             out.append(
                 f'  <path d="{sp_off}"'
-                f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
+                f' fill="white" stroke="{BAND_STROKE_COLOR}"'
                 f' stroke-width="{stroke_w:.3f}"/>'
             )
 
