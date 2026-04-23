@@ -247,10 +247,12 @@ def write_individual_svg(output_path: str, text_lines: list[str], font_name: str
         out.append('  ]]></style></defs>')
 
     # Band outline at origin (0, 0)
+    # fill="#ffffff" fill-opacity="0" instead of fill="none" — CorelDRAW
+    # auto-locks stroke-only (fill="none") paths as guide objects.
     d = _band_path_d(band_cmds, 0.0, 0.0)
     out.append(
         f'  <path d="{d}"'
-        f' fill="none" stroke="{BAND_STROKE_COLOR}"'
+        f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
         f' stroke-width="{stroke_w:.3f}"/>'
     )
 
@@ -477,10 +479,12 @@ def build_layout_svg(items: list[dict]) -> str:
         baseline_y = by + BAND_CY - block_h / 2 + fs * 0.75
 
         # ── band outline (inlined, absolute coordinates) ──────────────────
+        # fill="#ffffff" fill-opacity="0" instead of fill="none" — CorelDRAW
+        # auto-locks stroke-only (fill="none") paths as guide objects.
         d = _band_path_d(band_cmds, bx, by)
         out.append(
             f'  <path d="{d}"'
-            f' fill="none" stroke="{BAND_STROKE_COLOR}"'
+            f' fill="#ffffff" fill-opacity="0" stroke="{BAND_STROKE_COLOR}"'
             f' stroke-width="{stroke_w:.3f}"/>'
         )
 
@@ -512,7 +516,9 @@ def ss_get(path: str, params: dict) -> dict:
         return json.loads(r.read())
 
 
-def is_gavel(sku: str) -> bool:
+def is_gavel(sku) -> bool:
+    if not sku:
+        return False
     return any(p in sku for p in GAVEL_SKU_PATTERNS)
 
 
