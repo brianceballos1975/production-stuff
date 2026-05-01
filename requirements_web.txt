@@ -1,0 +1,10 @@
+flask>=3.0
+flask-cors>=4.0
+python-barcode>=0.15
+gunicorn>=21.0
+apscheduler>=3.10
+google-cloud-firestore>=2.16
+fonttools>=4.50
+weasyprint>=60.0
+xhtml2pdf>=0.2.17
+pypdf>=4.0

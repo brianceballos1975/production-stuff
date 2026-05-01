@@ -1,0 +1,28 @@
+# gcloudignore — controls what is uploaded to Cloud Build
+# Explicit file so gcloud never auto-excludes fonts or other assets
+
+.gcloudignore
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Credentials
+.env
+
+# Generated output (large, not needed in image)
+gavel_eps/
+layouts/
+backups/
+
+# Spreadsheet/database files
+*.xlsm
+*.db
+*.db-shm
+*.db-wal
+*.csv
+
+# fonts/ and templates/ are required — do NOT exclude them
