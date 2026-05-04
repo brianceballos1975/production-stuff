@@ -168,8 +168,20 @@ def _sync_gavel_orders(days=7):
         ss_get, is_gavel, fetch_customization, parse_customization,
         _is_silver_band_order, _sku_has_soundblock, PAGE_SIZE,
     )
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # ── Open a run-history entry so the dashboard shows this sync ──
+    run_id    = str(uuid.uuid4())
+    run_ref   = db().collection(RUNS_COL).document(run_id)
+    run_start = datetime.now(timezone.utc)
+    run_ref.set({
+        "id": run_id, "started_at": run_start, "finished_at": None,
+        "status": "running", "trigger": "sync", "log": "",
+        "svgs": 0, "errors": 0, "order_numbers": [], "notes": "",
+    })
+
+    cutoff     = run_start - timedelta(days=days)
     cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    log_lines  = [f"ShipStation sync — last {days} days (from {cutoff_str} UTC)"]
 
     params = {
         "orderStatus": "awaiting_shipment",
@@ -178,9 +190,11 @@ def _sync_gavel_orders(days=7):
         "page": 1,
     }
 
-    synced_count = 0
-    error_count = 0
-    seen_order_numbers = set()   # track every order seen in awaiting_shipment
+    synced_count         = 0
+    error_count          = 0
+    cancelled_count      = 0
+    synced_order_numbers = set()   # order numbers for which we created new docs
+    seen_order_numbers   = set()   # all order numbers returned by ShipStation
     col = db().collection(GAVEL_ORDERS_COL)
 
     while True:
@@ -191,7 +205,7 @@ def _sync_gavel_orders(days=7):
 
         for order in orders:
             order_number = order.get("orderNumber", "")
-            seen_order_numbers.add(order_number)   # always track, before any filtering
+            seen_order_numbers.add(order_number)
             ship = order
             for item_idx, item in enumerate(order.get("items", [])):
                 if not is_gavel(item):
@@ -201,78 +215,81 @@ def _sync_gavel_orders(days=7):
                 if not url:
                     continue
 
-                doc_id = f"{order_number}_{item_idx}"
+                doc_id  = f"{order_number}_{item_idx}"
                 if col.document(doc_id).get().exists:
                     continue
 
-                sku = item.get("sku", "")
-                item_name = item.get("name", "")
-                ship_to = order.get("shipTo", {})
+                sku          = item.get("sku", "")
+                item_name    = item.get("name", "")
+                ship_to      = order.get("shipTo", {})
+                ship_by_raw  = order.get("shipByDate") or ""
+                order_date_raw = order.get("orderDate") or ""
 
                 try:
                     cust_json = fetch_customization(url)
-                    parsed = parse_customization(cust_json)
-                    want_sb = parsed["sb_option"] == "custom_engraved" and bool(parsed["sb_lines"])
+                    parsed    = parse_customization(cust_json)
+                    want_sb   = parsed["sb_option"] == "custom_engraved" and bool(parsed["sb_lines"])
                     flags = {
-                        "gavel_only": parsed["sb_option"] in (None, "no_engraving", "unknown") and not _sku_has_soundblock(sku),
-                        "sound_block_no": (parsed["sb_option"] in ("no_engraving", "unknown") or parsed["sb_option"] is None) and _sku_has_soundblock(sku) and not want_sb,
+                        "gavel_only":         parsed["sb_option"] in (None, "no_engraving", "unknown") and not _sku_has_soundblock(sku),
+                        "sound_block_no":     (parsed["sb_option"] in ("no_engraving", "unknown") or parsed["sb_option"] is None) and _sku_has_soundblock(sku) and not want_sb,
                         "sound_block_custom": want_sb,
-                        "gift_bag_gavel": parsed["wants_suede_gavel"],
-                        "gift_bag_sb": parsed["wants_suede_sb"],
+                        "gift_bag_gavel":     parsed["wants_suede_gavel"],
+                        "gift_bag_sb":        parsed["wants_suede_sb"],
                     }
-                    ship_by_raw = order.get("shipByDate") or ""
-                    order_date_raw = order.get("orderDate") or ""
                     doc = {
                         "order_number": order_number,
-                        "item_idx": item_idx,
-                        "sku": sku,
-                        "item_name": item_name,
-                        "qty": item.get("quantity", 1),
-                        "customer": ship_to.get("name", ""),
-                        "order_date": order_date_raw[:10] if order_date_raw else "",
-                        "ship_by_date": ship_by_raw[:10] if ship_by_raw else "",
-                        "font": parsed.get("font", "Arial"),
-                        "text_lines": parsed.get("band_lines", []),
-                        "sb_option": parsed.get("sb_option"),
-                        "sb_lines": parsed.get("sb_lines", []),
-                        "sb_font": parsed.get("sb_font", "Arial"),
-                        "want_sb": want_sb,
+                        "item_idx":     item_idx,
+                        "sku":          sku,
+                        "item_name":    item_name,
+                        "qty":          item.get("quantity", 1),
+                        "customer":     ship_to.get("name", ""),
+                        "order_date":   order_date_raw[:10] if order_date_raw else "",
+                        "ship_by_date": ship_by_raw[:10]    if ship_by_raw    else "",
+                        "font":         parsed.get("font", "Arial"),
+                        "text_lines":   parsed.get("band_lines", []),
+                        "sb_option":    parsed.get("sb_option"),
+                        "sb_lines":     parsed.get("sb_lines", []),
+                        "sb_font":      parsed.get("sb_font", "Arial"),
+                        "want_sb":      want_sb,
                         "wants_suede_gavel": parsed.get("wants_suede_gavel", False),
-                        "wants_suede_sb": parsed.get("wants_suede_sb", False),
-                        "is_silver": _is_silver_band_order(ship),
+                        "wants_suede_sb":    parsed.get("wants_suede_sb",    False),
+                        "is_silver":    _is_silver_band_order(ship),
                         "band_template": "7inch" if any(kw in item_name.lower() for kw in ["walnut", "black"]) else "standard",
-                        "flags": flags,
-                        "ship_to": ship_to,
-                        "synced_at": datetime.now(timezone.utc),
-                        "status": "ready",
-                        "error": None,
+                        "flags":        flags,
+                        "ship_to":      ship_to,
+                        "synced_at":    datetime.now(timezone.utc),
+                        "status":       "ready",
+                        "error":        None,
                     }
                     col.document(doc_id).set(doc)
                     synced_count += 1
+                    synced_order_numbers.add(order_number)
+                    log_lines.append(f"  + {order_number} item {item_idx}  ({ship_to.get('name', '')})")
                 except Exception as e:
                     error_count += 1
                     col.document(doc_id).set({
                         "order_number": order_number,
-                        "item_idx": item_idx,
-                        "sku": sku,
-                        "item_name": item_name,
-                        "qty": item.get("quantity", 1),
-                        "customer": ship_to.get("name", ""),
-                        "order_date": order_date_raw[:10] if order_date_raw else "",
-                        "ship_by_date": ship_by_raw[:10] if ship_by_raw else "",
-                        "ship_to": ship_to,
-                        "synced_at": datetime.now(timezone.utc),
-                        "status": "error",
-                        "error": str(e),
+                        "item_idx":     item_idx,
+                        "sku":          sku,
+                        "item_name":    item_name,
+                        "qty":          item.get("quantity", 1),
+                        "customer":     ship_to.get("name", ""),
+                        "order_date":   order_date_raw[:10] if order_date_raw else "",
+                        "ship_by_date": ship_by_raw[:10]    if ship_by_raw    else "",
+                        "ship_to":      ship_to,
+                        "synced_at":    datetime.now(timezone.utc),
+                        "status":       "error",
+                        "error":        str(e),
                     })
+                    log_lines.append(f"  ! {order_number} item {item_idx} — {e}")
 
         total = data.get("total", 0)
-        page = params["page"]
+        page  = params["page"]
         if page * PAGE_SIZE >= total:
             break
         params["page"] = page + 1
 
-    # Mark orders that are no longer awaiting_shipment (cancelled/shipped/on-hold) as cancelled
+    # ── Mark orders no longer in awaiting_shipment as cancelled ──
     if seen_order_numbers:
         try:
             existing_in_window = col.where("synced_at", ">=", cutoff).stream()
@@ -281,8 +298,24 @@ def _sync_gavel_orders(days=7):
                 on = ed.get("order_number", "")
                 if on and on not in seen_order_numbers and ed.get("status") != "cancelled":
                     col.document(ex_doc.id).update({"status": "cancelled"})
+                    cancelled_count += 1
+                    log_lines.append(f"  ~ {on} marked cancelled")
         except Exception as ce:
             app.logger.warning(f"Cancellation check failed: {ce}")
+            log_lines.append(f"  ! Cancellation check failed: {ce}")
+
+    log_lines.append(
+        f"Done — {synced_count} new item(s), {error_count} error(s), {cancelled_count} cancelled"
+    )
+    final_status = "error" if error_count > 0 else "success"
+    run_ref.update({
+        "finished_at":   datetime.now(timezone.utc),
+        "status":        final_status,
+        "errors":        error_count,
+        "order_numbers": list(synced_order_numbers),
+        "notes":         f"{synced_count} new, {cancelled_count} cancelled",
+        "log":           "\n".join(log_lines),
+    })
 
     return synced_count, error_count
 

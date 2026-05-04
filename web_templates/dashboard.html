@@ -601,6 +601,12 @@ let runsCache     = [];
   }
 })();
 
+// Auto-refresh run history every 60 s so syncs and new runs appear automatically
+setInterval(() => {
+  // Skip while a run is actively being polled (it calls loadRuns on finish)
+  if (!pollTimer) loadRuns();
+}, 60_000);
+
 // ── Run trigger ────────────────────────────────────────────────────────────
 async function triggerRun() {
   const textarea = document.getElementById('forceOrders');
@@ -736,7 +742,9 @@ function renderHistory(runs) {
     const timeStr = dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
     const dur     = r.finished_at ? durationStr(r.started_at, r.finished_at) : '—';
     const badge   = statusBadge(r.status);
-    const trigger = r.trigger === 'scheduled' ? '🕐 Scheduled' : '👆 Manual';
+    const trigger = r.trigger === 'scheduled' ? '🕐 Scheduled'
+                  : r.trigger === 'sync'      ? '🔄 Sync'
+                  :                             '👆 Manual';
     const notes   = escHtml(r.notes || '');
     const orders  = r.order_numbers || [];
     const ordersJson = escHtml(JSON.stringify(orders));
@@ -754,7 +762,7 @@ function renderHistory(runs) {
       </td>
       <td style="white-space:nowrap;font-size:.8rem;color:var(--muted);">${trigger}</td>
       <td>${badge}</td>
-      <td style="font-weight:600;text-align:center;">${r.svgs ?? '—'}</td>
+      <td style="font-weight:600;text-align:center;">${r.trigger === 'sync' ? (r.notes || '—') : (r.svgs ?? '—')}</td>
       <td style="text-align:center;color:${r.errors > 0 ? 'var(--error)' : 'var(--muted)'};">${r.errors ?? '—'}</td>
       <td style="font-size:.78rem;color:var(--muted);">${dur}</td>
       <td style="min-width:160px;" onclick="event.stopPropagation()">
@@ -781,7 +789,7 @@ function renderHistory(runs) {
         <th>Date &amp; Time</th>
         <th>Trigger</th>
         <th>Status</th>
-        <th style="text-align:center;">SVGs</th>
+        <th style="text-align:center;">SVGs / Synced</th>
         <th style="text-align:center;">Errors</th>
         <th>Duration</th>
         <th>Notes</th>
