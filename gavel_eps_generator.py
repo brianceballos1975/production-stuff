@@ -264,6 +264,10 @@ FONT_FILE_MAP: dict[str, str] = {
     "alegreya extrabold italic":      "Alegreya-ExtraBoldItalic.ttf",
     "alegreya black":                 "Alegreya-Black.ttf",
     "alegreya black italic":          "Alegreya-BlackItalic.ttf",
+    # Syncopate
+    "syncopate":                      "Syncopate-Regular.ttf",
+    "syncopate regular":              "Syncopate-Regular.ttf",
+    "syncopate bold":                 "Syncopate-Bold.ttf",
     # Oswald
     "oswald":                         "Oswald-Regular.ttf",
     "oswald regular":                 "Oswald-Regular.ttf",
