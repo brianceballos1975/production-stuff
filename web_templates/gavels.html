@@ -221,6 +221,7 @@
   .detail-section h4 { font-size: .75rem; font-weight: 700; text-transform: uppercase; color: var(--muted); margin-bottom: .4rem; letter-spacing: .05em; }
   .detail-line { margin-bottom: .2rem; color: var(--text); }
   .detail-line span { color: var(--muted); }
+  .detail-item-header { font-weight: 700; font-size: .8rem; margin: .5rem 0 .2rem; color: var(--primary); }
   .detail-sep { border: none; border-top: 1px dashed var(--border); margin: .5rem 0; }
 
   /* ── States ── */
@@ -278,9 +279,9 @@
           <tr>
             <th style="width:36px"><input type="checkbox" id="selectAll" title="Select all"></th>
             <th class="sortable" data-col="order_number">Order # <span class="sort-icon">&#8597;</span></th>
-            <th class="sortable" data-col="qty">Qty <span class="sort-icon">&#8597;</span></th>
+            <th class="sortable" data-col="total_qty">Qty <span class="sort-icon">&#8597;</span></th>
             <th class="sortable" data-col="customer">Customer <span class="sort-icon">&#8597;</span></th>
-            <th class="sortable" data-col="item_name">Item <span class="sort-icon">&#8597;</span></th>
+            <th>Item</th>
             <th class="sortable" data-col="order_date">Order Date <span class="sort-icon">&#8597;</span></th>
             <th class="sortable" data-col="ship_by_date">Ship By <span class="sort-icon">&#8597;</span></th>
             <th>Flags</th>
@@ -306,7 +307,7 @@
   let sortCol = "order_date";
   let sortDir = -1; // -1 = desc
   let activeFlag = "all";
-  let selectedIds = new Set();
+  let selectedIds = new Set(); // stores order_number strings
 
   // ── Bootstrap ──────────────────────────────────────────────────────────────
   loadOrders();
@@ -315,8 +316,8 @@
   document.getElementById("selectAll").addEventListener("change", function () {
     const visible = visibleRows();
     visible.forEach(o => {
-      if (this.checked) selectedIds.add(o.id);
-      else selectedIds.delete(o.id);
+      if (this.checked) selectedIds.add(o.order_number);
+      else selectedIds.delete(o.order_number);
     });
     updateLayoutBtn();
     render();
@@ -382,7 +383,10 @@
     return allOrders.filter(o => {
       if (activeFlag !== "all" && !o.flags?.[activeFlag]) return false;
       if (q) {
-        const hay = [o.order_number, o.customer, o.item_name, o.sku].join(" ").toLowerCase();
+        let hay = [o.order_number, o.customer].join(" ").toLowerCase();
+        (o.items || []).forEach(it => {
+          hay += " " + [it.customer, it.item_name, it.sku, ...(it.text_lines || [])].join(" ").toLowerCase();
+        });
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -416,12 +420,11 @@
       return;
     }
 
-    const allVisible = rows.every(o => selectedIds.has(o.id));
+    const allVisible = rows.every(o => selectedIds.has(o.order_number));
     document.getElementById("selectAll").checked = rows.length > 0 && allVisible;
-    document.getElementById("selectAll").indeterminate = !allVisible && rows.some(o => selectedIds.has(o.id));
+    document.getElementById("selectAll").indeterminate = !allVisible && rows.some(o => selectedIds.has(o.order_number));
 
-    const frags = rows.map(o => buildRow(o)).join("");
-    tbody.innerHTML = frags;
+    tbody.innerHTML = rows.map(o => buildRow(o)).join("");
 
     // Re-attach row-click expand listeners
     tbody.querySelectorAll("tr.data-row").forEach(tr => {
@@ -448,36 +451,46 @@
 
   function updateSelectAll(rows) {
     const sa = document.getElementById("selectAll");
-    const allVis = rows.length > 0 && rows.every(o => selectedIds.has(o.id));
-    const someVis = rows.some(o => selectedIds.has(o.id));
+    const allVis = rows.length > 0 && rows.every(o => selectedIds.has(o.order_number));
+    const someVis = rows.some(o => selectedIds.has(o.order_number));
     sa.checked = allVis;
     sa.indeterminate = !allVis && someVis;
   }
 
   function buildRow(o) {
-    const checked = selectedIds.has(o.id) ? "checked" : "";
+    const id = o.order_number;
+    const checked = selectedIds.has(id) ? "checked" : "";
     const flags = buildFlags(o.flags || {}, o.status);
     const detail = buildDetail(o);
+
+    // Item name: first item's name; note if multiple different items
+    const items = o.items || [];
+    let itemDisplay = items.length > 0 ? (items[0].item_name || "") : "";
+    if (items.length > 1) {
+      const allSame = items.every(it => it.item_name === items[0].item_name);
+      if (!allSame) itemDisplay += ` (+${items.length - 1} more)`;
+    }
+
     return `
-      <tr class="data-row" data-id="${esc(o.id)}">
+      <tr class="data-row" data-id="${esc(id)}">
         <td onclick="event.stopPropagation()">
-          <input type="checkbox" class="row-check" data-id="${esc(o.id)}" ${checked}>
+          <input type="checkbox" class="row-check" data-id="${esc(id)}" ${checked}>
         </td>
         <td><span class="order-num">${esc(o.order_number || "")}</span></td>
-        <td>${esc(String(o.qty || 1))}</td>
+        <td>${esc(String(o.total_qty || 1))}</td>
         <td><span class="customer-name">${esc(o.customer || "")}</span></td>
-        <td><span class="item-name" title="${esc(o.item_name || "")}">${esc(o.item_name || "")}</span></td>
+        <td><span class="item-name" title="${esc(itemDisplay)}">${esc(itemDisplay)}</span></td>
         <td>${esc(o.order_date || "")}</td>
         <td>${esc(o.ship_by_date || "")}</td>
         <td><div class="flags-cell">${flags}</div></td>
         <td onclick="event.stopPropagation()">
           <div class="actions-cell">
-            <button class="action-btn svg-btn" onclick="dlSVG('${esc(o.id)}')">SVG &#8595;</button>
-            <button class="action-btn pdf-btn" onclick="dlPDF('${esc(o.id)}')">PDF &#8595;</button>
+            <button class="action-btn svg-btn" onclick="dlSVG('${esc(id)}')">SVG &#8595;</button>
+            <button class="action-btn pdf-btn" onclick="dlPDF('${esc(id)}')">PDF &#8595;</button>
           </div>
         </td>
       </tr>
-      <tr class="detail-row hidden" id="detail-${esc(o.id)}">
+      <tr class="detail-row hidden" id="detail-${esc(id)}">
         <td colspan="9">${detail}</td>
       </tr>`;
   }
@@ -494,17 +507,19 @@
   }
 
   function buildDetail(o) {
-    let gavelLines = "";
-    if (o.font) gavelLines += `<div class="detail-line"><span>Font:</span> ${esc(o.font)}</div>`;
-    (o.text_lines || []).forEach((line, i) => {
-      gavelLines += `<div class="detail-line"><span>L${i + 1}:</span> ${esc(line)}</div>`;
-    });
+    const items = o.items || [];
+    let engravingHtml = "";
 
-    let sbLines = "";
-    if (o.want_sb && o.sb_lines && o.sb_lines.length) {
-      sbLines += `<hr class="detail-sep">`;
-      sbLines += `<div class="detail-line"><span>Sound Block Font:</span> ${esc(o.sb_font || "")}</div>`;
-      sbLines += `<div class="detail-line"><span>Text:</span> ${esc(o.sb_lines.join(" / "))}</div>`;
+    if (items.length === 0) {
+      engravingHtml = '<div class="detail-line" style="color:var(--muted)">No engraving data</div>';
+    } else if (items.length === 1) {
+      engravingHtml = buildItemEngraving(items[0]);
+    } else {
+      items.forEach((it, idx) => {
+        engravingHtml += `<div class="detail-item-header">Band ${idx + 1}${it.customer ? " — " + esc(it.customer) : ""}:</div>`;
+        engravingHtml += buildItemEngraving(it);
+        if (idx < items.length - 1) engravingHtml += '<hr class="detail-sep">';
+      });
     }
 
     let addrLines = "";
@@ -517,20 +532,35 @@
     }
     if (st.country) addrLines += `<div class="detail-line">${esc(st.country)}</div>`;
 
-    if (o.error) {
-      addrLines += `<div class="detail-line" style="color:var(--error);margin-top:.5rem"><span>Error:</span> ${esc(o.error)}</div>`;
+    const errItem = items.find(it => it.status === "error" && it.error);
+    if (errItem) {
+      addrLines += `<div class="detail-line" style="color:var(--error);margin-top:.5rem"><span>Error:</span> ${esc(errItem.error)}</div>`;
     }
 
     return `<div class="detail-grid">
       <div class="detail-section">
-        <h4>Engraving</h4>
-        ${gavelLines}${sbLines}
+        <h4>Engraving${items.length > 1 ? " (" + items.length + " bands)" : ""}</h4>
+        ${engravingHtml}
       </div>
       <div class="detail-section">
         <h4>Ship To</h4>
         ${addrLines || '<div class="detail-line" style="color:var(--muted)">No address</div>'}
       </div>
     </div>`;
+  }
+
+  function buildItemEngraving(it) {
+    let html = "";
+    if (it.font) html += `<div class="detail-line"><span>Font:</span> ${esc(it.font)}</div>`;
+    (it.text_lines || []).forEach((line, i) => {
+      html += `<div class="detail-line"><span>L${i + 1}:</span> ${esc(line)}</div>`;
+    });
+    if (it.want_sb && it.sb_lines && it.sb_lines.length) {
+      html += `<div class="detail-line" style="margin-top:.3rem"><span>SB Font:</span> ${esc(it.sb_font || "")}</div>`;
+      html += `<div class="detail-line"><span>SB Text:</span> ${esc(it.sb_lines.join(" / "))}</div>`;
+    }
+    if (!html) html = '<div class="detail-line" style="color:var(--muted)">—</div>';
+    return html;
   }
 
   function updateLayoutBtn() {
@@ -546,12 +576,12 @@
   }
 
   // ── Downloads ─────────────────────────────────────────────────────────────
-  function dlSVG(id) {
-    triggerDownload("/api/gavel-orders/" + encodeURIComponent(id) + "/svg");
+  function dlSVG(orderNumber) {
+    triggerDownload("/api/gavel-orders/" + encodeURIComponent(orderNumber) + "/svg");
   }
 
-  function dlPDF(id) {
-    triggerDownload("/api/gavel-orders/" + encodeURIComponent(id) + "/pdf");
+  function dlPDF(orderNumber) {
+    triggerDownload("/api/gavel-orders/" + encodeURIComponent(orderNumber) + "/pdf");
   }
 
   function triggerDownload(url) {
@@ -564,8 +594,8 @@
   }
 
   async function doCombined() {
-    const ids = Array.from(selectedIds);
-    if (!ids.length) return;
+    const order_numbers = Array.from(selectedIds);
+    if (!order_numbers.length) return;
     const btn = document.getElementById("layoutBtn");
     btn.disabled = true;
     btn.textContent = "Generating…";
@@ -573,7 +603,7 @@
       const res = await fetch("/api/gavel-orders/combined", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
+        body: JSON.stringify({ order_numbers }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));

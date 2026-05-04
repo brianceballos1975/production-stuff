@@ -180,6 +180,8 @@ def _sync_gavel_orders(days=7):
 
     synced_count = 0
     error_count = 0
+    seen_order_numbers = set()   # track every order seen in awaiting_shipment
+    col = db().collection(GAVEL_ORDERS_COL)
 
     while True:
         data = ss_get("/orders", params)
@@ -187,10 +189,9 @@ def _sync_gavel_orders(days=7):
         if not orders:
             break
 
-        col = db().collection(GAVEL_ORDERS_COL)
-
         for order in orders:
             order_number = order.get("orderNumber", "")
+            seen_order_numbers.add(order_number)   # always track, before any filtering
             ship = order
             for item_idx, item in enumerate(order.get("items", [])):
                 if not is_gavel(item):
@@ -250,9 +251,6 @@ def _sync_gavel_orders(days=7):
                     synced_count += 1
                 except Exception as e:
                     error_count += 1
-                    ship_to = order.get("shipTo", {})
-                    ship_by_raw = order.get("shipByDate") or ""
-                    order_date_raw = order.get("orderDate") or ""
                     col.document(doc_id).set({
                         "order_number": order_number,
                         "item_idx": item_idx,
@@ -273,6 +271,18 @@ def _sync_gavel_orders(days=7):
         if page * PAGE_SIZE >= total:
             break
         params["page"] = page + 1
+
+    # Mark orders that are no longer awaiting_shipment (cancelled/shipped/on-hold) as cancelled
+    if seen_order_numbers:
+        try:
+            existing_in_window = col.where("synced_at", ">=", cutoff).stream()
+            for ex_doc in existing_in_window:
+                ed = ex_doc.to_dict()
+                on = ed.get("order_number", "")
+                if on and on not in seen_order_numbers and ed.get("status") != "cancelled":
+                    col.document(ex_doc.id).update({"status": "cancelled"})
+        except Exception as ce:
+            app.logger.warning(f"Cancellation check failed: {ce}")
 
     return synced_count, error_count
 
@@ -390,7 +400,9 @@ def gavels_page():
 
 @app.route("/api/gavel-orders")
 def list_gavel_orders():
+    from collections import defaultdict
     days = int(request.args.get("days", 14))
+    show_cancelled = request.args.get("cancelled", "false").lower() == "true"
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     docs = (
         db().collection(GAVEL_ORDERS_COL)
@@ -399,7 +411,50 @@ def list_gavel_orders():
         .limit(500)
         .stream()
     )
-    return jsonify([_serial({**d.to_dict(), "id": d.id}) for d in docs])
+
+    groups = defaultdict(list)
+    for d in docs:
+        data = {**_serial(d.to_dict()), "doc_id": d.id}
+        groups[data.get("order_number", d.id)].append(data)
+
+    orders = []
+    for order_number, items in groups.items():
+        items.sort(key=lambda x: x.get("item_idx", 0))
+        all_cancelled = all(it.get("status") == "cancelled" for it in items)
+        if not show_cancelled and all_cancelled:
+            continue
+
+        first = items[0]
+        merged_flags = {}
+        for it in items:
+            for k, v in (it.get("flags") or {}).items():
+                if v:
+                    merged_flags[k] = True
+
+        total_qty = sum(it.get("qty", 1) for it in items)
+        statuses = {it.get("status") for it in items}
+        if all_cancelled:
+            status = "cancelled"
+        elif "error" in statuses:
+            status = "error"
+        else:
+            status = "ready"
+
+        orders.append({
+            "order_number": order_number,
+            "customer": first.get("customer", ""),
+            "order_date": first.get("order_date", ""),
+            "ship_by_date": first.get("ship_by_date", ""),
+            "total_qty": total_qty,
+            "item_count": len(items),
+            "flags": merged_flags,
+            "status": status,
+            "ship_to": first.get("ship_to", {}),
+            "items": items,
+        })
+
+    orders.sort(key=lambda o: o.get("order_date") or "", reverse=True)
+    return jsonify(orders)
 
 
 @app.route("/api/gavel-orders/sync", methods=["POST"])
@@ -412,106 +467,137 @@ def sync_gavel_orders():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/gavel-orders/<doc_id>/svg")
-def download_gavel_svg(doc_id):
-    from gavel_eps_generator import write_individual_svg, resolve_font_path, TEMPLATE_PATH, TEMPLATE_PATH_7
+@app.route("/api/gavel-orders/<order_number>/svg")
+def download_order_svg(order_number):
+    from gavel_eps_generator import write_individual_svg, build_layout_svg, resolve_font_path, TEMPLATE_PATH, TEMPLATE_PATH_7
     from flask import Response
-    doc = db().collection(GAVEL_ORDERS_COL).document(doc_id).get()
-    if not doc.exists:
+    docs_stream = db().collection(GAVEL_ORDERS_COL).where("order_number", "==", order_number).stream()
+    items_data = [d.to_dict() for d in docs_stream]
+    items_data = [d for d in items_data if d.get("status") != "cancelled"]
+    if not items_data:
         return jsonify({"error": "not found"}), 404
-    d = doc.to_dict()
-    font_path, effective_font = resolve_font_path(d.get("font", "Arial"))
-    if not font_path:
-        return jsonify({"error": "Font not found"}), 500
-    band_template = TEMPLATE_PATH_7 if d.get("band_template") == "7inch" else TEMPLATE_PATH
-    with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp:
-        tmp_path = tmp.name
-    try:
-        write_individual_svg(tmp_path, d.get("text_lines", []), effective_font, font_path, band_template)
-        svg_content = open(tmp_path, "r", encoding="utf-8").read()
-    finally:
-        os.unlink(tmp_path)
-    safe = d["order_number"].replace("-", "")
-    return Response(svg_content, mimetype="image/svg+xml",
-        headers={"Content-Disposition": f'attachment; filename="{safe}_{d["sku"]}_band.svg"'})
+    items_data.sort(key=lambda x: x.get("item_idx", 0))
 
-
-@app.route("/api/gavel-orders/<doc_id>/pdf")
-def download_gavel_pdf(doc_id):
-    from gavel_eps_generator import write_packing_slip, html_to_pdf
-    from flask import Response
-    doc = db().collection(GAVEL_ORDERS_COL).document(doc_id).get()
-    if not doc.exists:
-        return jsonify({"error": "not found"}), 404
-    d = doc.to_dict()
-    ship = {"orderNumber": d["order_number"], "orderDate": d.get("order_date", ""),
-            "requestedShippingService": "", "shipTo": d.get("ship_to", {}), "items": []}
-    slip_items = [{
-        "sku": d.get("sku", ""), "item_name": d.get("item_name", ""),
-        "qty": d.get("qty", 1), "font": d.get("font", "Arial"),
-        "text_lines": d.get("text_lines", []),
-        "sb_option": d.get("sb_option"), "sb_lines": d.get("sb_lines", []),
-        "sb_font": d.get("sb_font", "Arial"), "want_sb": d.get("want_sb", False),
-        "wants_suede_gavel": d.get("wants_suede_gavel", False),
-        "wants_suede_sb": d.get("wants_suede_sb", False), "sb_font_error": None,
-    }]
-    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as h:
-        html_path = h.name
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as p:
-        pdf_path = p.name
-    try:
-        write_packing_slip(html_path, d["order_number"], d.get("customer", ""), ship, slip_items)
-        ok = html_to_pdf(html_path, pdf_path)
-        if not ok:
-            return jsonify({"error": "PDF generation failed"}), 500
-        pdf_bytes = open(pdf_path, "rb").read()
-    finally:
-        for f in [html_path, pdf_path]:
-            try:
-                os.unlink(f)
-            except Exception:
-                pass
-    safe = d["order_number"].replace("-", "")
-    return Response(pdf_bytes, mimetype="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{safe}_workorder.pdf"'})
-
-
-@app.route("/api/gavel-orders/combined", methods=["POST"])
-def combined_gavel_layout():
-    from gavel_eps_generator import build_layout_svg, build_soundblock_layout_svg, resolve_font_path, TEMPLATE_PATH, TEMPLATE_PATH_7
-    from flask import Response
-    body = request.json or {}
-    ids = body.get("ids", [])
-    if not ids:
-        return jsonify({"error": "no ids"}), 400
-    items, sb_items = [], []
-    for doc_id in ids:
-        doc = db().collection(GAVEL_ORDERS_COL).document(doc_id).get()
-        if not doc.exists:
-            continue
-        d = doc.to_dict()
-        if d.get("status") != "ready":
+    layout_items = []
+    for d in items_data:
+        if not d.get("text_lines"):
             continue
         fp, ef = resolve_font_path(d.get("font", "Arial"))
         if not fp:
             continue
         bt = TEMPLATE_PATH_7 if d.get("band_template") == "7inch" else TEMPLATE_PATH
         for _ in range(d.get("qty", 1)):
-            items.append({
-                "order_number": d["order_number"], "customer": d.get("customer", ""),
-                "sku": d.get("sku", ""), "font": ef, "font_path": fp,
-                "lines": d.get("text_lines", []), "template_path": bt,
+            layout_items.append({
+                "order_number": d["order_number"],
+                "customer": d.get("customer", ""),
+                "sku": d.get("sku", ""),
+                "font": ef, "font_path": fp,
+                "lines": d.get("text_lines", []),
+                "template_path": bt,
                 "is_silver": d.get("is_silver", False),
             })
-        if d.get("want_sb") and d.get("sb_lines"):
-            sfp, sef = resolve_font_path(d.get("sb_font", "Arial"))
-            if sfp:
-                for _ in range(d.get("qty", 1)):
-                    sb_items.append({
-                        "order_number": d["order_number"], "customer": d.get("customer", ""),
-                        "sku": d.get("sku", ""), "font": sef, "font_path": sfp,
-                        "lines": d.get("sb_lines", []),
-                    })
+    if not layout_items:
+        return jsonify({"error": "no valid items"}), 400
+
+    if len(layout_items) == 1:
+        it = layout_items[0]
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            write_individual_svg(tmp_path, it["lines"], it["font"], it["font_path"], it["template_path"])
+            svg_content = open(tmp_path, "r", encoding="utf-8").read()
+        finally:
+            try: os.unlink(tmp_path)
+            except: pass
+    else:
+        svg_content = build_layout_svg(layout_items)
+
+    safe = order_number.replace("-", "")
+    return Response(svg_content, mimetype="image/svg+xml",
+        headers={"Content-Disposition": f'attachment; filename="{safe}_band.svg"'})
+
+
+@app.route("/api/gavel-orders/<order_number>/pdf")
+def download_order_pdf(order_number):
+    from gavel_eps_generator import write_packing_slip, html_to_pdf
+    from flask import Response
+    docs_stream = db().collection(GAVEL_ORDERS_COL).where("order_number", "==", order_number).stream()
+    items_data = [d.to_dict() for d in docs_stream]
+    items_data = [d for d in items_data if d.get("status") != "cancelled"]
+    if not items_data:
+        return jsonify({"error": "not found"}), 404
+    items_data.sort(key=lambda x: x.get("item_idx", 0))
+
+    first = items_data[0]
+    ship = {
+        "orderNumber": order_number,
+        "orderDate": first.get("order_date", ""),
+        "requestedShippingService": "",
+        "shipTo": first.get("ship_to", {}),
+        "items": [],
+    }
+    slip_items = []
+    for d in items_data:
+        slip_items.append({
+            "sku": d.get("sku", ""), "item_name": d.get("item_name", ""),
+            "qty": d.get("qty", 1), "font": d.get("font", "Arial"),
+            "text_lines": d.get("text_lines", []),
+            "sb_option": d.get("sb_option"), "sb_lines": d.get("sb_lines", []),
+            "sb_font": d.get("sb_font", "Arial"), "want_sb": d.get("want_sb", False),
+            "wants_suede_gavel": d.get("wants_suede_gavel", False),
+            "wants_suede_sb": d.get("wants_suede_sb", False), "sb_font_error": None,
+        })
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as h:
+        html_path = h.name
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as p:
+        pdf_path = p.name
+    try:
+        write_packing_slip(html_path, order_number, first.get("customer", ""), ship, slip_items)
+        ok = html_to_pdf(html_path, pdf_path)
+        if not ok:
+            return jsonify({"error": "PDF generation failed"}), 500
+        pdf_bytes = open(pdf_path, "rb").read()
+    finally:
+        for f in [html_path, pdf_path]:
+            try: os.unlink(f)
+            except: pass
+    safe = order_number.replace("-", "")
+    return Response(pdf_bytes, mimetype="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe}_workorder.pdf"'})
+
+
+@app.route("/api/gavel-orders/combined", methods=["POST"])
+def combined_gavel_layout():
+    from gavel_eps_generator import build_layout_svg, resolve_font_path, TEMPLATE_PATH, TEMPLATE_PATH_7
+    from flask import Response
+    body = request.json or {}
+    order_numbers = body.get("order_numbers", [])
+    if not order_numbers:
+        return jsonify({"error": "no order_numbers"}), 400
+    items = []
+    col = db().collection(GAVEL_ORDERS_COL)
+    for order_number in order_numbers:
+        docs_stream = col.where("order_number", "==", order_number).stream()
+        order_docs = sorted(
+            [d.to_dict() for d in docs_stream],
+            key=lambda x: x.get("item_idx", 0)
+        )
+        for d in order_docs:
+            if d.get("status") == "cancelled":
+                continue
+            if not d.get("text_lines"):
+                continue
+            fp, ef = resolve_font_path(d.get("font", "Arial"))
+            if not fp:
+                continue
+            bt = TEMPLATE_PATH_7 if d.get("band_template") == "7inch" else TEMPLATE_PATH
+            for _ in range(d.get("qty", 1)):
+                items.append({
+                    "order_number": d["order_number"], "customer": d.get("customer", ""),
+                    "sku": d.get("sku", ""), "font": ef, "font_path": fp,
+                    "lines": d.get("text_lines", []), "template_path": bt,
+                    "is_silver": d.get("is_silver", False),
+                })
     if not items:
         return jsonify({"error": "no valid items"}), 400
     svg = build_layout_svg(items)
