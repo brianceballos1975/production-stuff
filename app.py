@@ -434,7 +434,8 @@ def gavels_page():
 @app.route("/api/gavel-orders")
 def list_gavel_orders():
     from collections import defaultdict
-    days = int(request.args.get("days", 14))
+    days          = int(request.args.get("days", 14))
+    show_archived = request.args.get("archived", "false").lower() == "true"
     show_cancelled = request.args.get("cancelled", "false").lower() == "true"
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     docs = (
@@ -453,8 +454,25 @@ def list_gavel_orders():
     orders = []
     for order_number, items in groups.items():
         items.sort(key=lambda x: x.get("item_idx", 0))
-        all_cancelled = all(it.get("status") == "cancelled" for it in items)
-        if not show_cancelled and all_cancelled:
+
+        all_cancelled   = all(it.get("status") == "cancelled" for it in items)
+        non_cancelled   = [it for it in items if it.get("status") != "cancelled"]
+        all_done        = bool(non_cancelled) and all(it.get("status") == "done" for it in non_cancelled)
+        statuses        = {it.get("status") for it in items}
+
+        if all_cancelled:
+            status = "cancelled"
+        elif all_done:
+            status = "done"
+        elif "error" in statuses:
+            status = "error"
+        else:
+            status = "ready"
+
+        # Filter: hide done (archived) unless explicitly requested
+        if not show_archived and status == "done":
+            continue
+        if not show_cancelled and status == "cancelled":
             continue
 
         first = items[0]
@@ -465,25 +483,18 @@ def list_gavel_orders():
                     merged_flags[k] = True
 
         total_qty = sum(it.get("qty", 1) for it in items)
-        statuses = {it.get("status") for it in items}
-        if all_cancelled:
-            status = "cancelled"
-        elif "error" in statuses:
-            status = "error"
-        else:
-            status = "ready"
 
         orders.append({
             "order_number": order_number,
-            "customer": first.get("customer", ""),
-            "order_date": first.get("order_date", ""),
+            "customer":     first.get("customer", ""),
+            "order_date":   first.get("order_date", ""),
             "ship_by_date": first.get("ship_by_date", ""),
-            "total_qty": total_qty,
-            "item_count": len(items),
-            "flags": merged_flags,
-            "status": status,
-            "ship_to": first.get("ship_to", {}),
-            "items": items,
+            "total_qty":    total_qty,
+            "item_count":   len(items),
+            "flags":        merged_flags,
+            "status":       status,
+            "ship_to":      first.get("ship_to", {}),
+            "items":        items,
         })
 
     orders.sort(key=lambda o: o.get("order_date") or "", reverse=True)
@@ -597,6 +608,7 @@ def download_order_pdf(order_number):
             try: os.unlink(f)
             except: pass
     safe = order_number.replace("-", "")
+    _mark_order_done_async(order_number)
     _log_download_async("PDF", [order_number],
         notes=f"PDF — {order_number} ({len(slip_items)} item(s))")
     return Response(pdf_bytes, mimetype="application/pdf",
@@ -737,10 +749,26 @@ def combined_gavel_pdf():
             try: os.unlink(f)
             except: pass
 
+    for _on in order_numbers:
+        _mark_order_done_async(_on)
     _log_download_async("Combined PDF", order_numbers,
         notes=f"Combined PDF — {len(slip_htmls)} packing slip(s)")
     return Response(pdf_bytes, mimetype="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="combined_workorders.pdf"'})
+
+
+def _mark_order_done_async(order_number: str):
+    """Fire-and-forget: set every non-cancelled doc for order_number to status='done'."""
+    def _run():
+        try:
+            col  = db().collection(GAVEL_ORDERS_COL)
+            docs = col.where("order_number", "==", order_number).stream()
+            for d in docs:
+                if d.to_dict().get("status") not in ("cancelled",):
+                    col.document(d.id).update({"status": "done"})
+        except Exception as _e:
+            app.logger.warning(f"Mark done failed for {order_number}: {_e}")
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _log_download_async(file_type: str, order_numbers: list, notes: str = ""):

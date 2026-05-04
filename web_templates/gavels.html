@@ -224,6 +224,12 @@
   .detail-item-header { font-weight: 700; font-size: .8rem; margin: .5rem 0 .2rem; color: var(--primary); }
   .detail-sep { border: none; border-top: 1px dashed var(--border); margin: .5rem 0; }
 
+  /* ── Done / archived rows ── */
+  tr.data-row.row-done > td { background: #f0fdf4; }
+  tr.data-row.row-done:hover > td { background: #dcfce7; cursor: pointer; }
+  tr.detail-row.row-done-detail td { background: #f0fdf4; }
+  .badge-done { background: #dcfce7; color: #15803d; }
+
   /* ── States ── */
   .state-row td { text-align: center; padding: 3rem 1rem; color: var(--muted); }
   .spinner {
@@ -266,6 +272,7 @@
       <button class="filter-btn" data-flag="gift_bag_gavel">Gavel Bag</button>
       <button class="filter-btn" data-flag="gift_bag_sb">SB Bag</button>
     </div>
+    <button class="btn btn-secondary" id="archiveToggle" onclick="toggleArchive()">Show Archived</button>
     <button class="btn btn-secondary" id="syncBtn" onclick="doSync()">Sync Orders</button>
     <button class="btn btn-primary" id="layoutBtn" disabled onclick="doCombined()">
       Generate Layout
@@ -306,11 +313,12 @@
 
 <script>
   // ── State ──────────────────────────────────────────────────────────────────
-  let allOrders = [];
-  let sortCol = "order_date";
-  let sortDir = -1; // -1 = desc
-  let activeFlag = "all";
-  let selectedIds = new Set(); // stores order_number strings
+  let allOrders    = [];
+  let sortCol      = "order_date";
+  let sortDir      = -1; // -1 = desc
+  let activeFlag   = "all";
+  let selectedIds  = new Set(); // stores order_number strings
+  let showArchived = false;
 
   // ── Bootstrap ──────────────────────────────────────────────────────────────
   loadOrders();
@@ -347,13 +355,24 @@
   // ── Data loading ──────────────────────────────────────────────────────────
   async function loadOrders() {
     try {
-      const res = await fetch("/api/gavel-orders");
+      const url = "/api/gavel-orders" + (showArchived ? "?archived=true" : "");
+      const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       allOrders = await res.json();
       render();
     } catch (err) {
       showError("Failed to load orders: " + err.message);
     }
+  }
+
+  function toggleArchive() {
+    showArchived = !showArchived;
+    const btn = document.getElementById("archiveToggle");
+    btn.textContent = showArchived ? "Hide Archived" : "Show Archived";
+    btn.style.background = showArchived ? "#dcfce7" : "";
+    btn.style.color      = showArchived ? "#15803d" : "";
+    btn.style.border     = showArchived ? "1px solid #86efac" : "";
+    loadOrders();
   }
 
   async function doSync() {
@@ -461,10 +480,11 @@
   }
 
   function buildRow(o) {
-    const id = o.order_number;
+    const id      = o.order_number;
+    const isDone  = o.status === "done";
     const checked = selectedIds.has(id) ? "checked" : "";
-    const flags = buildFlags(o.flags || {}, o.status);
-    const detail = buildDetail(o);
+    const flags   = buildFlags(o.flags || {}, o.status);
+    const detail  = buildDetail(o);
 
     // Item name: first item's name; note if multiple different items
     const items = o.items || [];
@@ -474,8 +494,11 @@
       if (!allSame) itemDisplay += ` (+${items.length - 1} more)`;
     }
 
+    const rowCls    = "data-row" + (isDone ? " row-done" : "");
+    const detailCls = "detail-row hidden" + (isDone ? " row-done-detail" : "");
+
     return `
-      <tr class="data-row" data-id="${esc(id)}">
+      <tr class="${rowCls}" data-id="${esc(id)}">
         <td onclick="event.stopPropagation()">
           <input type="checkbox" class="row-check" data-id="${esc(id)}" ${checked}>
         </td>
@@ -493,13 +516,14 @@
           </div>
         </td>
       </tr>
-      <tr class="detail-row hidden" id="detail-${esc(id)}">
+      <tr class="${detailCls}" id="detail-${esc(id)}">
         <td colspan="9">${detail}</td>
       </tr>`;
   }
 
   function buildFlags(flags, status) {
     const parts = [];
+    if (status === "done")  parts.push('<span class="badge badge-done">&#10003; Done</span>');
     if (status === "error") parts.push('<span class="badge badge-error">Error</span>');
     if (flags.gavel_only) parts.push('<span class="badge badge-gray">Gavel Only</span>');
     if (flags.sound_block_no) parts.push('<span class="badge badge-orange">SB &#x2013; NO</span>');
@@ -583,8 +607,28 @@
     triggerDownload("/api/gavel-orders/" + encodeURIComponent(orderNumber) + "/svg");
   }
 
-  function dlPDF(orderNumber) {
-    triggerDownload("/api/gavel-orders/" + encodeURIComponent(orderNumber) + "/pdf");
+  async function dlPDF(orderNumber) {
+    try {
+      const res = await fetch("/api/gavel-orders/" + encodeURIComponent(orderNumber) + "/pdf");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = orderNumber.replace(/-/g, "") + "_workorder.pdf";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      // Mark done locally — row disappears if not showing archived
+      markDoneLocally([orderNumber]);
+    } catch (err) {
+      alert("PDF download failed: " + err.message);
+    }
   }
 
   function triggerDownload(url) {
@@ -655,11 +699,30 @@
       a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 5000);
+      // Mark all selected orders as done — rows disappear if not showing archived
+      markDoneLocally(order_numbers);
     } catch (err) {
       alert("Packing slip generation failed: " + err.message);
     } finally {
       updateLayoutBtn();
     }
+  }
+
+  function markDoneLocally(orderNumbers) {
+    orderNumbers.forEach(on => {
+      const order = allOrders.find(o => o.order_number === on);
+      if (order) {
+        order.status = "done";
+        (order.items || []).forEach(it => { it.status = "done"; });
+      }
+      selectedIds.delete(on);
+    });
+    updateLayoutBtn();
+    if (!showArchived) {
+      // Remove done orders from the visible list — "archived from board"
+      allOrders = allOrders.filter(o => o.status !== "done");
+    }
+    render();
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
