@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gavel Orders</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #f1f5f9;
+    --card:     #ffffff;
+    --border:   #e2e8f0;
+    --text:     #0f172a;
+    --muted:    #64748b;
+    --primary:  #2563eb;
+    --primary-h:#1d4ed8;
+    --success:  #16a34a;
+    --warning:  #d97706;
+    --error:    #dc2626;
+    --radius:   10px;
+    --shadow:   0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+    --shadow-md:0 4px 6px rgba(0,0,0,.07), 0 2px 4px rgba(0,0,0,.06);
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  header {
+    background: #0f172a;
+    color: #fff;
+    padding: 0 1.5rem;
+    height: 58px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  }
+  .header-left { display: flex; align-items: center; gap: .75rem; }
+  .header-logo { font-size: 1.25rem; }
+  .header-title { font-size: 1rem; font-weight: 600; letter-spacing: -.01em; }
+  .header-nav { display: flex; align-items: center; gap: 1.5rem; }
+  .header-nav a {
+    color: #94a3b8;
+    text-decoration: none;
+    font-size: .875rem;
+    font-weight: 500;
+    padding: .25rem .5rem;
+    border-radius: 6px;
+    transition: color .15s, background .15s;
+  }
+  .header-nav a:hover { color: #fff; background: rgba(255,255,255,.08); }
+  .header-nav a.active { color: #fff; background: rgba(255,255,255,.12); }
+  .header-right { display: flex; align-items: center; gap: .75rem; }
+  .sync-pill {
+    font-size: .72rem;
+    font-weight: 500;
+    padding: .2rem .65rem;
+    border-radius: 999px;
+    background: #1e293b;
+    color: #94a3b8;
+    letter-spacing: .01em;
+  }
+
+  /* ── Main ── */
+  main { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
+
+  /* ── Toolbar ── */
+  .toolbar {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: .75rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+  .toolbar input[type="search"] {
+    flex: 1;
+    min-width: 180px;
+    padding: .45rem .75rem;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    font-size: .875rem;
+    outline: none;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .toolbar input[type="search"]:focus { border-color: var(--primary); }
+
+  .filter-group { display: flex; gap: .4rem; flex-wrap: wrap; }
+  .filter-btn {
+    padding: .35rem .7rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: .78rem;
+    font-weight: 500;
+    cursor: pointer;
+    background: var(--bg);
+    color: var(--muted);
+    transition: all .15s;
+  }
+  .filter-btn:hover { border-color: var(--primary); color: var(--primary); }
+  .filter-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+  .btn {
+    padding: .45rem .9rem;
+    border: none;
+    border-radius: 7px;
+    font-size: .875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, opacity .15s;
+    white-space: nowrap;
+  }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-h); }
+  .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-secondary { background: #e2e8f0; color: var(--text); }
+  .btn-secondary:hover { background: #cbd5e1; }
+
+  /* ── Table card ── */
+  .table-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+  thead { background: #f8fafc; }
+  th {
+    padding: .65rem .9rem;
+    text-align: left;
+    font-size: .75rem;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    user-select: none;
+  }
+  th.sortable { cursor: pointer; }
+  th.sortable:hover { color: var(--text); }
+  th .sort-icon { margin-left: .3rem; opacity: .4; }
+  th.sort-asc .sort-icon, th.sort-desc .sort-icon { opacity: 1; color: var(--primary); }
+
+  td {
+    padding: .6rem .9rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr.data-row:hover > td { background: #f8fafc; cursor: pointer; }
+  tr.detail-row td { background: #f8fafc; padding: .75rem 1rem; border-bottom: 1px solid var(--border); }
+  tr.detail-row.hidden { display: none; }
+
+  .order-num { font-weight: 600; font-family: monospace; font-size: .82rem; }
+  .customer-name { font-weight: 500; }
+  .item-name { color: var(--muted); font-size: .82rem; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── Badges ── */
+  .badge {
+    display: inline-block;
+    font-size: .65rem;
+    font-weight: 600;
+    padding: .15rem .45rem;
+    border-radius: 999px;
+    letter-spacing: .02em;
+    white-space: nowrap;
+  }
+  .badge-gray    { background: #e2e8f0; color: #475569; }
+  .badge-orange  { background: #fef3c7; color: #92400e; }
+  .badge-blue    { background: #dbeafe; color: #1d4ed8; }
+  .badge-green   { background: #dcfce7; color: #15803d; }
+  .badge-purple  { background: #f3e8ff; color: #7e22ce; }
+  .badge-error   { background: #fee2e2; color: #991b1b; }
+  .flags-cell { display: flex; flex-wrap: wrap; gap: .25rem; }
+
+  /* ── Action buttons ── */
+  .action-btn {
+    padding: .25rem .55rem;
+    font-size: .75rem;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    cursor: pointer;
+    background: var(--card);
+    color: var(--text);
+    transition: background .12s;
+    white-space: nowrap;
+  }
+  .action-btn:hover { background: #f1f5f9; }
+  .action-btn.svg-btn { color: #059669; border-color: #a7f3d0; }
+  .action-btn.svg-btn:hover { background: #ecfdf5; }
+  .action-btn.pdf-btn { color: #dc2626; border-color: #fca5a5; }
+  .action-btn.pdf-btn:hover { background: #fef2f2; }
+  .actions-cell { display: flex; gap: .35rem; align-items: center; }
+
+  /* ── Detail row ── */
+  .detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    font-size: .82rem;
+  }
+  @media (max-width: 640px) { .detail-grid { grid-template-columns: 1fr; } }
+  .detail-section h4 { font-size: .75rem; font-weight: 700; text-transform: uppercase; color: var(--muted); margin-bottom: .4rem; letter-spacing: .05em; }
+  .detail-line { margin-bottom: .2rem; color: var(--text); }
+  .detail-line span { color: var(--muted); }
+  .detail-sep { border: none; border-top: 1px dashed var(--border); margin: .5rem 0; }
+
+  /* ── States ── */
+  .state-row td { text-align: center; padding: 3rem 1rem; color: var(--muted); }
+  .spinner {
+    display: inline-block;
+    width: 28px; height: 28px;
+    border: 3px solid var(--border);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    margin-bottom: .5rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .state-label { display: block; font-size: .875rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <span class="header-logo">&#9881;</span>
+    <span class="header-title">Gavel Generator</span>
+  </div>
+  <nav class="header-nav">
+    <a href="/">Dashboard</a>
+    <a href="/gavels" class="active">Gavels</a>
+  </nav>
+  <div class="header-right">
+    <span class="sync-pill" id="syncPill">Never synced</span>
+  </div>
+</header>
+
+<main>
+  <div class="toolbar">
+    <input type="search" id="searchInput" placeholder="Search order #, customer, item, SKU…">
+    <div class="filter-group" id="filterGroup">
+      <button class="filter-btn active" data-flag="all">All</button>
+      <button class="filter-btn" data-flag="gavel_only">Gavel Only</button>
+      <button class="filter-btn" data-flag="sound_block_custom">SB&#x2013;Custom</button>
+      <button class="filter-btn" data-flag="sound_block_no">SB&#x2013;NO</button>
+      <button class="filter-btn" data-flag="gift_bag_gavel">Gavel Bag</button>
+      <button class="filter-btn" data-flag="gift_bag_sb">SB Bag</button>
+    </div>
+    <button class="btn btn-secondary" id="syncBtn" onclick="doSync()">Sync Orders</button>
+    <button class="btn btn-primary" id="layoutBtn" disabled onclick="doCombined()">
+      Generate Layout
+    </button>
+  </div>
+
+  <div class="table-card">
+    <div class="table-wrap">
+      <table id="mainTable">
+        <thead>
+          <tr>
+            <th style="width:36px"><input type="checkbox" id="selectAll" title="Select all"></th>
+            <th class="sortable" data-col="order_number">Order # <span class="sort-icon">&#8597;</span></th>
+            <th class="sortable" data-col="qty">Qty <span class="sort-icon">&#8597;</span></th>
+            <th class="sortable" data-col="customer">Customer <span class="sort-icon">&#8597;</span></th>
+            <th class="sortable" data-col="item_name">Item <span class="sort-icon">&#8597;</span></th>
+            <th class="sortable" data-col="order_date">Order Date <span class="sort-icon">&#8597;</span></th>
+            <th class="sortable" data-col="ship_by_date">Ship By <span class="sort-icon">&#8597;</span></th>
+            <th>Flags</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody">
+          <tr class="state-row" id="loadingRow">
+            <td colspan="9">
+              <div class="spinner"></div>
+              <span class="state-label">Loading orders…</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  let allOrders = [];
+  let sortCol = "order_date";
+  let sortDir = -1; // -1 = desc
+  let activeFlag = "all";
+  let selectedIds = new Set();
+
+  // ── Bootstrap ──────────────────────────────────────────────────────────────
+  loadOrders();
+
+  document.getElementById("searchInput").addEventListener("input", render);
+  document.getElementById("selectAll").addEventListener("change", function () {
+    const visible = visibleRows();
+    visible.forEach(o => {
+      if (this.checked) selectedIds.add(o.id);
+      else selectedIds.delete(o.id);
+    });
+    updateLayoutBtn();
+    render();
+  });
+
+  document.querySelectorAll("#filterGroup .filter-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      activeFlag = btn.dataset.flag;
+      document.querySelectorAll("#filterGroup .filter-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      render();
+    });
+  });
+
+  document.querySelectorAll("th.sortable").forEach(th => {
+    th.addEventListener("click", () => {
+      const col = th.dataset.col;
+      if (sortCol === col) sortDir *= -1;
+      else { sortCol = col; sortDir = -1; }
+      render();
+    });
+  });
+
+  // ── Data loading ──────────────────────────────────────────────────────────
+  async function loadOrders() {
+    try {
+      const res = await fetch("/api/gavel-orders");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      allOrders = await res.json();
+      render();
+    } catch (err) {
+      showError("Failed to load orders: " + err.message);
+    }
+  }
+
+  async function doSync() {
+    const btn = document.getElementById("syncBtn");
+    btn.disabled = true;
+    btn.textContent = "Syncing…";
+    try {
+      const res = await fetch("/api/gavel-orders/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ days: 7 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "sync failed");
+      const now = new Date();
+      document.getElementById("syncPill").textContent =
+        "Last sync: " + now.toLocaleTimeString() + " (" + data.synced + " new, " + data.errors + " err)";
+      await loadOrders();
+    } catch (err) {
+      alert("Sync failed: " + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Sync Orders";
+    }
+  }
+
+  // ── Rendering ─────────────────────────────────────────────────────────────
+  function visibleRows() {
+    const q = document.getElementById("searchInput").value.trim().toLowerCase();
+    return allOrders.filter(o => {
+      if (activeFlag !== "all" && !o.flags?.[activeFlag]) return false;
+      if (q) {
+        const hay = [o.order_number, o.customer, o.item_name, o.sku].join(" ").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function render() {
+    const rows = visibleRows();
+    rows.sort((a, b) => {
+      const av = a[sortCol] ?? "";
+      const bv = b[sortCol] ?? "";
+      return av < bv ? sortDir : av > bv ? -sortDir : 0;
+    });
+
+    // Update sort icons
+    document.querySelectorAll("th.sortable").forEach(th => {
+      th.classList.remove("sort-asc", "sort-desc");
+      if (th.dataset.col === sortCol) {
+        th.classList.add(sortDir === 1 ? "sort-asc" : "sort-desc");
+        th.querySelector(".sort-icon").textContent = sortDir === 1 ? "▲" : "▼";
+      } else {
+        th.querySelector(".sort-icon").textContent = "⇅";
+      }
+    });
+
+    const tbody = document.getElementById("tableBody");
+
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr class="state-row"><td colspan="9"><span class="state-label">No orders found.</span></td></tr>`;
+      updateSelectAll(rows);
+      return;
+    }
+
+    const allVisible = rows.every(o => selectedIds.has(o.id));
+    document.getElementById("selectAll").checked = rows.length > 0 && allVisible;
+    document.getElementById("selectAll").indeterminate = !allVisible && rows.some(o => selectedIds.has(o.id));
+
+    const frags = rows.map(o => buildRow(o)).join("");
+    tbody.innerHTML = frags;
+
+    // Re-attach row-click expand listeners
+    tbody.querySelectorAll("tr.data-row").forEach(tr => {
+      tr.addEventListener("click", e => {
+        if (e.target.type === "checkbox" || e.target.closest("button")) return;
+        const id = tr.dataset.id;
+        const det = document.getElementById("detail-" + id);
+        if (det) det.classList.toggle("hidden");
+      });
+    });
+
+    // Checkbox listeners
+    tbody.querySelectorAll("input.row-check").forEach(cb => {
+      cb.addEventListener("change", () => {
+        if (cb.checked) selectedIds.add(cb.dataset.id);
+        else selectedIds.delete(cb.dataset.id);
+        updateLayoutBtn();
+        updateSelectAll(visibleRows());
+      });
+    });
+
+    updateLayoutBtn();
+  }
+
+  function updateSelectAll(rows) {
+    const sa = document.getElementById("selectAll");
+    const allVis = rows.length > 0 && rows.every(o => selectedIds.has(o.id));
+    const someVis = rows.some(o => selectedIds.has(o.id));
+    sa.checked = allVis;
+    sa.indeterminate = !allVis && someVis;
+  }
+
+  function buildRow(o) {
+    const checked = selectedIds.has(o.id) ? "checked" : "";
+    const flags = buildFlags(o.flags || {}, o.status);
+    const detail = buildDetail(o);
+    return `
+      <tr class="data-row" data-id="${esc(o.id)}">
+        <td onclick="event.stopPropagation()">
+          <input type="checkbox" class="row-check" data-id="${esc(o.id)}" ${checked}>
+        </td>
+        <td><span class="order-num">${esc(o.order_number || "")}</span></td>
+        <td>${esc(String(o.qty || 1))}</td>
+        <td><span class="customer-name">${esc(o.customer || "")}</span></td>
+        <td><span class="item-name" title="${esc(o.item_name || "")}">${esc(o.item_name || "")}</span></td>
+        <td>${esc(o.order_date || "")}</td>
+        <td>${esc(o.ship_by_date || "")}</td>
+        <td><div class="flags-cell">${flags}</div></td>
+        <td onclick="event.stopPropagation()">
+          <div class="actions-cell">
+            <button class="action-btn svg-btn" onclick="dlSVG('${esc(o.id)}')">SVG &#8595;</button>
+            <button class="action-btn pdf-btn" onclick="dlPDF('${esc(o.id)}')">PDF &#8595;</button>
+          </div>
+        </td>
+      </tr>
+      <tr class="detail-row hidden" id="detail-${esc(o.id)}">
+        <td colspan="9">${detail}</td>
+      </tr>`;
+  }
+
+  function buildFlags(flags, status) {
+    const parts = [];
+    if (status === "error") parts.push('<span class="badge badge-error">Error</span>');
+    if (flags.gavel_only) parts.push('<span class="badge badge-gray">Gavel Only</span>');
+    if (flags.sound_block_no) parts.push('<span class="badge badge-orange">SB &#x2013; NO</span>');
+    if (flags.sound_block_custom) parts.push('<span class="badge badge-blue">SB &#x2013; Custom</span>');
+    if (flags.gift_bag_gavel) parts.push('<span class="badge badge-green">Gavel Bag</span>');
+    if (flags.gift_bag_sb) parts.push('<span class="badge badge-purple">SB Bag</span>');
+    return parts.join("") || '<span class="badge badge-gray">&#x2014;</span>';
+  }
+
+  function buildDetail(o) {
+    let gavelLines = "";
+    if (o.font) gavelLines += `<div class="detail-line"><span>Font:</span> ${esc(o.font)}</div>`;
+    (o.text_lines || []).forEach((line, i) => {
+      gavelLines += `<div class="detail-line"><span>L${i + 1}:</span> ${esc(line)}</div>`;
+    });
+
+    let sbLines = "";
+    if (o.want_sb && o.sb_lines && o.sb_lines.length) {
+      sbLines += `<hr class="detail-sep">`;
+      sbLines += `<div class="detail-line"><span>Sound Block Font:</span> ${esc(o.sb_font || "")}</div>`;
+      sbLines += `<div class="detail-line"><span>Text:</span> ${esc(o.sb_lines.join(" / "))}</div>`;
+    }
+
+    let addrLines = "";
+    const st = o.ship_to || {};
+    if (st.name) addrLines += `<div class="detail-line">${esc(st.name)}</div>`;
+    if (st.street1) addrLines += `<div class="detail-line">${esc(st.street1)}</div>`;
+    if (st.street2) addrLines += `<div class="detail-line">${esc(st.street2)}</div>`;
+    if (st.city || st.state || st.postalCode) {
+      addrLines += `<div class="detail-line">${esc([st.city, st.state, st.postalCode].filter(Boolean).join(", "))}</div>`;
+    }
+    if (st.country) addrLines += `<div class="detail-line">${esc(st.country)}</div>`;
+
+    if (o.error) {
+      addrLines += `<div class="detail-line" style="color:var(--error);margin-top:.5rem"><span>Error:</span> ${esc(o.error)}</div>`;
+    }
+
+    return `<div class="detail-grid">
+      <div class="detail-section">
+        <h4>Engraving</h4>
+        ${gavelLines}${sbLines}
+      </div>
+      <div class="detail-section">
+        <h4>Ship To</h4>
+        ${addrLines || '<div class="detail-line" style="color:var(--muted)">No address</div>'}
+      </div>
+    </div>`;
+  }
+
+  function updateLayoutBtn() {
+    const btn = document.getElementById("layoutBtn");
+    const n = selectedIds.size;
+    if (n === 0) {
+      btn.disabled = true;
+      btn.textContent = "Generate Layout";
+    } else {
+      btn.disabled = false;
+      btn.textContent = `Generate Layout (${n})`;
+    }
+  }
+
+  // ── Downloads ─────────────────────────────────────────────────────────────
+  function dlSVG(id) {
+    triggerDownload("/api/gavel-orders/" + encodeURIComponent(id) + "/svg");
+  }
+
+  function dlPDF(id) {
+    triggerDownload("/api/gavel-orders/" + encodeURIComponent(id) + "/pdf");
+  }
+
+  function triggerDownload(url) {
+    const a = document.createElement("a");
+    a.href = url;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  async function doCombined() {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    const btn = document.getElementById("layoutBtn");
+    btn.disabled = true;
+    btn.textContent = "Generating…";
+    try {
+      const res = await fetch("/api/gavel-orders/combined", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "combined_layout.svg";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      alert("Layout generation failed: " + err.message);
+    } finally {
+      updateLayoutBtn();
+    }
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function showError(msg) {
+    const tbody = document.getElementById("tableBody");
+    tbody.innerHTML = `<tr class="state-row"><td colspan="9" style="color:var(--error)"><span class="state-label">${esc(msg)}</span></td></tr>`;
+  }
+</script>
+</body>
+</html>

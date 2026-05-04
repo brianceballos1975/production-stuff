@@ -7,11 +7,16 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import io, tempfile
+from datetime import timedelta
+
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from google.cloud import firestore
+
+GAVEL_ORDERS_COL = "gavel_orders"
 
 app = Flask(__name__, template_folder="web_templates")
 CORS(app, origins=[
@@ -157,6 +162,128 @@ def _apply_sched(cfg: dict):
 _apply_sched(_load_sched())
 
 
+# ── Gavel order sync ──────────────────────────────────────────────────────────
+def _sync_gavel_orders(days=7):
+    from gavel_eps_generator import (
+        ss_get, is_gavel, fetch_customization, parse_customization,
+        _is_silver_band_order, _sku_has_soundblock, PAGE_SIZE,
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+
+    params = {
+        "orderStatus": "awaiting_shipment",
+        "createDateStart": cutoff_str,
+        "pageSize": PAGE_SIZE,
+        "page": 1,
+    }
+
+    synced_count = 0
+    error_count = 0
+
+    while True:
+        data = ss_get("/orders", params)
+        orders = data.get("orders", [])
+        if not orders:
+            break
+
+        col = db().collection(GAVEL_ORDERS_COL)
+
+        for order in orders:
+            order_number = order.get("orderNumber", "")
+            ship = order
+            for item_idx, item in enumerate(order.get("items", [])):
+                if not is_gavel(item):
+                    continue
+                opts = {o["name"]: o["value"] for o in item.get("options", []) if "name" in o}
+                url = opts.get("CustomizedURL")
+                if not url:
+                    continue
+
+                doc_id = f"{order_number}_{item_idx}"
+                if col.document(doc_id).get().exists:
+                    continue
+
+                sku = item.get("sku", "")
+                item_name = item.get("name", "")
+                ship_to = order.get("shipTo", {})
+
+                try:
+                    cust_json = fetch_customization(url)
+                    parsed = parse_customization(cust_json)
+                    want_sb = parsed["sb_option"] == "custom_engraved" and bool(parsed["sb_lines"])
+                    flags = {
+                        "gavel_only": parsed["sb_option"] in (None, "no_engraving", "unknown") and not _sku_has_soundblock(sku),
+                        "sound_block_no": (parsed["sb_option"] in ("no_engraving", "unknown") or parsed["sb_option"] is None) and _sku_has_soundblock(sku) and not want_sb,
+                        "sound_block_custom": want_sb,
+                        "gift_bag_gavel": parsed["wants_suede_gavel"],
+                        "gift_bag_sb": parsed["wants_suede_sb"],
+                    }
+                    ship_by_raw = order.get("shipByDate") or ""
+                    order_date_raw = order.get("orderDate") or ""
+                    doc = {
+                        "order_number": order_number,
+                        "item_idx": item_idx,
+                        "sku": sku,
+                        "item_name": item_name,
+                        "qty": item.get("quantity", 1),
+                        "customer": ship_to.get("name", ""),
+                        "order_date": order_date_raw[:10] if order_date_raw else "",
+                        "ship_by_date": ship_by_raw[:10] if ship_by_raw else "",
+                        "font": parsed.get("font", "Arial"),
+                        "text_lines": parsed.get("band_lines", []),
+                        "sb_option": parsed.get("sb_option"),
+                        "sb_lines": parsed.get("sb_lines", []),
+                        "sb_font": parsed.get("sb_font", "Arial"),
+                        "want_sb": want_sb,
+                        "wants_suede_gavel": parsed.get("wants_suede_gavel", False),
+                        "wants_suede_sb": parsed.get("wants_suede_sb", False),
+                        "is_silver": _is_silver_band_order(ship),
+                        "band_template": "7inch" if any(kw in item_name.lower() for kw in ["walnut", "black"]) else "standard",
+                        "flags": flags,
+                        "ship_to": ship_to,
+                        "synced_at": datetime.now(timezone.utc),
+                        "status": "ready",
+                        "error": None,
+                    }
+                    col.document(doc_id).set(doc)
+                    synced_count += 1
+                except Exception as e:
+                    error_count += 1
+                    ship_to = order.get("shipTo", {})
+                    ship_by_raw = order.get("shipByDate") or ""
+                    order_date_raw = order.get("orderDate") or ""
+                    col.document(doc_id).set({
+                        "order_number": order_number,
+                        "item_idx": item_idx,
+                        "sku": sku,
+                        "item_name": item_name,
+                        "qty": item.get("quantity", 1),
+                        "customer": ship_to.get("name", ""),
+                        "order_date": order_date_raw[:10] if order_date_raw else "",
+                        "ship_by_date": ship_by_raw[:10] if ship_by_raw else "",
+                        "ship_to": ship_to,
+                        "synced_at": datetime.now(timezone.utc),
+                        "status": "error",
+                        "error": str(e),
+                    })
+
+        total = data.get("total", 0)
+        page = params["page"]
+        if page * PAGE_SIZE >= total:
+            break
+        params["page"] = page + 1
+
+    return synced_count, error_count
+
+
+scheduler.add_job(
+    lambda: _sync_gavel_orders(),
+    "interval", hours=1, id="gavel_sync", replace_existing=True,
+    next_run_time=datetime.now(timezone.utc),
+)
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.route("/")
 def dashboard():
@@ -176,6 +303,7 @@ def trigger_run():
     days       = data.get("days")
     if days:
         extra_args += ["--days", str(int(days))]
+    extra_args.append("--no-trello")
 
     run_id = _create_run_doc("manual")
     _launch(run_id, extra_args)
@@ -251,8 +379,144 @@ def cron_endpoint():
     if token != os.environ.get("CRON_TOKEN", ""):
         return jsonify({"error": "unauthorized"}), 401
     run_id = _create_run_doc("scheduled")
-    _launch(run_id)
+    _launch(run_id, ["--no-trello"])
     return jsonify({"run_id": run_id})
+
+
+@app.route("/gavels")
+def gavels_page():
+    return render_template("gavels.html")
+
+
+@app.route("/api/gavel-orders")
+def list_gavel_orders():
+    days = int(request.args.get("days", 14))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    docs = (
+        db().collection(GAVEL_ORDERS_COL)
+        .where("synced_at", ">=", cutoff)
+        .order_by("synced_at", direction=firestore.Query.DESCENDING)
+        .limit(500)
+        .stream()
+    )
+    return jsonify([_serial({**d.to_dict(), "id": d.id}) for d in docs])
+
+
+@app.route("/api/gavel-orders/sync", methods=["POST"])
+def sync_gavel_orders():
+    days = int((request.json or {}).get("days", 7))
+    try:
+        synced, errors = _sync_gavel_orders(days=days)
+        return jsonify({"synced": synced, "errors": errors})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/gavel-orders/<doc_id>/svg")
+def download_gavel_svg(doc_id):
+    from gavel_eps_generator import write_individual_svg, resolve_font_path, TEMPLATE_PATH, TEMPLATE_PATH_7
+    from flask import Response
+    doc = db().collection(GAVEL_ORDERS_COL).document(doc_id).get()
+    if not doc.exists:
+        return jsonify({"error": "not found"}), 404
+    d = doc.to_dict()
+    font_path, effective_font = resolve_font_path(d.get("font", "Arial"))
+    if not font_path:
+        return jsonify({"error": "Font not found"}), 500
+    band_template = TEMPLATE_PATH_7 if d.get("band_template") == "7inch" else TEMPLATE_PATH
+    with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        write_individual_svg(tmp_path, d.get("text_lines", []), effective_font, font_path, band_template)
+        svg_content = open(tmp_path, "r", encoding="utf-8").read()
+    finally:
+        os.unlink(tmp_path)
+    safe = d["order_number"].replace("-", "")
+    return Response(svg_content, mimetype="image/svg+xml",
+        headers={"Content-Disposition": f'attachment; filename="{safe}_{d["sku"]}_band.svg"'})
+
+
+@app.route("/api/gavel-orders/<doc_id>/pdf")
+def download_gavel_pdf(doc_id):
+    from gavel_eps_generator import write_packing_slip, html_to_pdf
+    from flask import Response
+    doc = db().collection(GAVEL_ORDERS_COL).document(doc_id).get()
+    if not doc.exists:
+        return jsonify({"error": "not found"}), 404
+    d = doc.to_dict()
+    ship = {"orderNumber": d["order_number"], "orderDate": d.get("order_date", ""),
+            "requestedShippingService": "", "shipTo": d.get("ship_to", {}), "items": []}
+    slip_items = [{
+        "sku": d.get("sku", ""), "item_name": d.get("item_name", ""),
+        "qty": d.get("qty", 1), "font": d.get("font", "Arial"),
+        "text_lines": d.get("text_lines", []),
+        "sb_option": d.get("sb_option"), "sb_lines": d.get("sb_lines", []),
+        "sb_font": d.get("sb_font", "Arial"), "want_sb": d.get("want_sb", False),
+        "wants_suede_gavel": d.get("wants_suede_gavel", False),
+        "wants_suede_sb": d.get("wants_suede_sb", False), "sb_font_error": None,
+    }]
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as h:
+        html_path = h.name
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as p:
+        pdf_path = p.name
+    try:
+        write_packing_slip(html_path, d["order_number"], d.get("customer", ""), ship, slip_items)
+        ok = html_to_pdf(html_path, pdf_path)
+        if not ok:
+            return jsonify({"error": "PDF generation failed"}), 500
+        pdf_bytes = open(pdf_path, "rb").read()
+    finally:
+        for f in [html_path, pdf_path]:
+            try:
+                os.unlink(f)
+            except Exception:
+                pass
+    safe = d["order_number"].replace("-", "")
+    return Response(pdf_bytes, mimetype="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe}_workorder.pdf"'})
+
+
+@app.route("/api/gavel-orders/combined", methods=["POST"])
+def combined_gavel_layout():
+    from gavel_eps_generator import build_layout_svg, build_soundblock_layout_svg, resolve_font_path, TEMPLATE_PATH, TEMPLATE_PATH_7
+    from flask import Response
+    body = request.json or {}
+    ids = body.get("ids", [])
+    if not ids:
+        return jsonify({"error": "no ids"}), 400
+    items, sb_items = [], []
+    for doc_id in ids:
+        doc = db().collection(GAVEL_ORDERS_COL).document(doc_id).get()
+        if not doc.exists:
+            continue
+        d = doc.to_dict()
+        if d.get("status") != "ready":
+            continue
+        fp, ef = resolve_font_path(d.get("font", "Arial"))
+        if not fp:
+            continue
+        bt = TEMPLATE_PATH_7 if d.get("band_template") == "7inch" else TEMPLATE_PATH
+        for _ in range(d.get("qty", 1)):
+            items.append({
+                "order_number": d["order_number"], "customer": d.get("customer", ""),
+                "sku": d.get("sku", ""), "font": ef, "font_path": fp,
+                "lines": d.get("text_lines", []), "template_path": bt,
+                "is_silver": d.get("is_silver", False),
+            })
+        if d.get("want_sb") and d.get("sb_lines"):
+            sfp, sef = resolve_font_path(d.get("sb_font", "Arial"))
+            if sfp:
+                for _ in range(d.get("qty", 1)):
+                    sb_items.append({
+                        "order_number": d["order_number"], "customer": d.get("customer", ""),
+                        "sku": d.get("sku", ""), "font": sef, "font_path": sfp,
+                        "lines": d.get("sb_lines", []),
+                    })
+    if not items:
+        return jsonify({"error": "no valid items"}), 400
+    svg = build_layout_svg(items)
+    return Response(svg, mimetype="image/svg+xml",
+        headers={"Content-Disposition": 'attachment; filename="combined_layout.svg"'})
 
 
 def _serial(d: dict) -> dict:

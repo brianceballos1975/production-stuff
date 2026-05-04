@@ -1823,6 +1823,8 @@ def main():
                         help="Force-process specific order numbers (bypasses Trello dedup)")
     parser.add_argument("--trello-card", metavar="CARD_ID",
                         help="Upload to this existing Trello card instead of creating a new one")
+    parser.add_argument("--no-trello", action="store_true",
+                        help="Skip posting/uploading to Trello entirely")
     args = parser.parse_args()
 
     out_dir = Path(args.output)
@@ -1856,14 +1858,28 @@ def main():
         if not shipments:
             print("Nothing to do.")
             return
-        # Cross-check Trello — skip orders already on the Customs board
-        print("\nCross-checking Trello Customs board for already-processed orders...")
-        already_in_trello = trello_get_processed_order_numbers()
-        print(f"  {len(already_in_trello)} order number(s) found on Trello board")
+        # Cross-check already-processed orders
+        if args.no_trello:
+            # Dedup against Firestore gavel_orders collection
+            print("\nCross-checking database for already-processed orders...")
+            try:
+                from google.cloud import firestore as _fs
+                _db = _fs.Client()
+                _docs = _db.collection("gavel_orders").select(["order_number"]).stream()
+                already_processed = {d.to_dict().get("order_number", "") for d in _docs}
+                print(f"  {len(already_processed)} order number(s) found in database")
+            except Exception as _e:
+                already_processed = set()
+                print(f"  (database unavailable — processing all orders: {_e})")
+        else:
+            # Legacy: cross-check Trello board
+            print("\nCross-checking Trello Customs board for already-processed orders...")
+            already_processed = trello_get_processed_order_numbers()
+            print(f"  {len(already_processed)} order number(s) found on Trello board")
 
         new_shipments = [
             s for s in shipments
-            if s.get("orderNumber", "") not in already_in_trello
+            if s.get("orderNumber", "") not in already_processed
         ]
         skipped = len(shipments) - len(new_shipments)
         if skipped:
@@ -1871,7 +1887,7 @@ def main():
         print(f"  {len(new_shipments)} new order(s) to process\n")
 
         if not new_shipments:
-            print("All orders already on Trello — nothing to do.")
+            print("All orders already processed — nothing to do.")
             return
 
         shipments = new_shipments
@@ -2154,72 +2170,73 @@ def main():
         writer.writerows(summary)
 
     # ── Post Trello cards ──────────────────────────────────────────────────────
-    if target_card_id:
-        # Upload only the batch PDF(s) to the existing card — no new card created
-        pdfs_to_upload = []
-        if batch_pdf_path and batch_pdf_path.exists():
-            pdfs_to_upload.append(batch_pdf_path)
-        if silver_batch_pdf_path and silver_batch_pdf_path.exists():
-            pdfs_to_upload.append(silver_batch_pdf_path)
-        if pdfs_to_upload:
-            print(f"\nUploading packing slip PDF(s) to existing Trello card {target_card_id}...")
-            try:
-                for i, f in enumerate(pdfs_to_upload, 1):
-                    print(f"  [{i}/{len(pdfs_to_upload)}] Uploading {f.name}...", end="", flush=True)
-                    trello_attach_file(target_card_id, str(f), mime_type="application/pdf")
-                    print(" ✓")
-            except Exception as e:
-                print(f"  Trello error: {e}")
+    if not args.no_trello:
+        if target_card_id:
+            # Upload only the batch PDF(s) to the existing card — no new card created
+            pdfs_to_upload = []
+            if batch_pdf_path and batch_pdf_path.exists():
+                pdfs_to_upload.append(batch_pdf_path)
+            if silver_batch_pdf_path and silver_batch_pdf_path.exists():
+                pdfs_to_upload.append(silver_batch_pdf_path)
+            if pdfs_to_upload:
+                print(f"\nUploading packing slip PDF(s) to existing Trello card {target_card_id}...")
+                try:
+                    for i, f in enumerate(pdfs_to_upload, 1):
+                        print(f"  [{i}/{len(pdfs_to_upload)}] Uploading {f.name}...", end="", flush=True)
+                        trello_attach_file(target_card_id, str(f), mime_type="application/pdf")
+                        print(" ✓")
+                except Exception as e:
+                    print(f"  Trello error: {e}")
+            else:
+                print("\n  No batch PDF generated — nothing uploaded to Trello.")
         else:
-            print("\n  No batch PDF generated — nothing uploaded to Trello.")
-    else:
-        if order_nums:
-            print(f"\nPosting Trello card ({len(order_nums)} order numbers)...")
-            try:
-                card_url, card_id = trello_create_gavel_card(order_nums, rerun=bool(force_orders))
-                if card_url:
-                    print(f"  Card created → {card_url}")
-                if card_id:
-                    upload_list = ([layout_path] if layout_path else []) + standard_svgs
-                    if sb_layout_path and sb_layout_path.exists():
-                        upload_list.append(sb_layout_path)
-                    if batch_pdf_path and batch_pdf_path.exists():
-                        upload_list.append(batch_pdf_path)
-                    for i, f in enumerate(upload_list, 1):
-                        print(f"  [{i}/{len(upload_list)}] Uploading {f.name}...", end="", flush=True)
-                        if f.suffix.lower() == ".pdf":
-                            mime = "application/pdf"
-                        elif f.suffix.lower() == ".html":
-                            mime = "text/html"
-                        else:
-                            mime = "image/svg+xml"
-                        trello_attach_file(card_id, str(f), mime_type=mime)
-                        print(" ✓")
-            except Exception as e:
-                print(f"  Trello error: {e}")
+            if order_nums:
+                print(f"\nPosting Trello card ({len(order_nums)} order numbers)...")
+                try:
+                    card_url, card_id = trello_create_gavel_card(order_nums, rerun=bool(force_orders))
+                    if card_url:
+                        print(f"  Card created → {card_url}")
+                    if card_id:
+                        upload_list = ([layout_path] if layout_path else []) + standard_svgs
+                        if sb_layout_path and sb_layout_path.exists():
+                            upload_list.append(sb_layout_path)
+                        if batch_pdf_path and batch_pdf_path.exists():
+                            upload_list.append(batch_pdf_path)
+                        for i, f in enumerate(upload_list, 1):
+                            print(f"  [{i}/{len(upload_list)}] Uploading {f.name}...", end="", flush=True)
+                            if f.suffix.lower() == ".pdf":
+                                mime = "application/pdf"
+                            elif f.suffix.lower() == ".html":
+                                mime = "text/html"
+                            else:
+                                mime = "image/svg+xml"
+                            trello_attach_file(card_id, str(f), mime_type=mime)
+                            print(" ✓")
+                except Exception as e:
+                    print(f"  Trello error: {e}")
 
-        if silver_order_nums:
-            print(f"\nPosting Trello card (Silver Band, {len(silver_order_nums)} order numbers)...")
-            try:
-                card_url, card_id = trello_create_gavel_card(silver_order_nums, variant="Silver Band", rerun=bool(force_orders))
-                if card_url:
-                    print(f"  Card created → {card_url}")
-                if card_id:
-                    upload_list = ([silver_layout_path] if silver_layout_path else []) + silver_svgs
-                    if silver_batch_pdf_path and silver_batch_pdf_path.exists():
-                        upload_list.append(silver_batch_pdf_path)
-                    for i, f in enumerate(upload_list, 1):
-                        print(f"  [{i}/{len(upload_list)}] Uploading {f.name}...", end="", flush=True)
-                        if f.suffix.lower() == ".pdf":
-                            mime = "application/pdf"
-                        elif f.suffix.lower() == ".html":
-                            mime = "text/html"
-                        else:
-                            mime = "image/svg+xml"
-                        trello_attach_file(card_id, str(f), mime_type=mime)
-                        print(" ✓")
-            except Exception as e:
-                print(f"  Trello error: {e}")
+            if silver_order_nums:
+                print(f"\nPosting Trello card (Silver Band, {len(silver_order_nums)} order numbers)...")
+                try:
+                    card_url, card_id = trello_create_gavel_card(silver_order_nums, variant="Silver Band", rerun=bool(force_orders))
+                    if card_url:
+                        print(f"  Card created → {card_url}")
+                    if card_id:
+                        upload_list = ([silver_layout_path] if silver_layout_path else []) + silver_svgs
+                        if silver_batch_pdf_path and silver_batch_pdf_path.exists():
+                            upload_list.append(silver_batch_pdf_path)
+                        for i, f in enumerate(upload_list, 1):
+                            print(f"  [{i}/{len(upload_list)}] Uploading {f.name}...", end="", flush=True)
+                            if f.suffix.lower() == ".pdf":
+                                mime = "application/pdf"
+                            elif f.suffix.lower() == ".html":
+                                mime = "text/html"
+                            else:
+                                mime = "image/svg+xml"
+                            trello_attach_file(card_id, str(f), mime_type=mime)
+                            print(" ✓")
+                except Exception as e:
+                    print(f"  Trello error: {e}")
 
     print(f"\n{'='*60}")
     print(f"Done.  Individual SVGs: {ok}  Errors: {errors}")
