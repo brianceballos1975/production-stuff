@@ -1345,7 +1345,23 @@ def parse_customization(cust_json: dict) -> dict:
     font       = "Arial"
     sb_font    = "Arial"
     sb_option: str | None = None
-    wants_suede = False
+    wants_suede_gavel = False
+    wants_suede_sb    = False
+
+    def _classify_suede(val: str) -> None:
+        nonlocal wants_suede_gavel, wants_suede_sb
+        v = val.strip().lower()
+        if not any(kw in v for kw in _SUEDE_YES_KEYWORDS):
+            return
+        has_sb  = "sound block" in v or "block" in v
+        has_gav = "gavel" in v or "both" in v
+        if "both" in v:
+            wants_suede_gavel = True
+            wants_suede_sb    = True
+        elif has_sb:
+            wants_suede_sb    = True
+        else:
+            wants_suede_gavel = True
 
     # ── Version 3.0 structure ──────────────────────────────────────────────
     surfaces = (
@@ -1364,8 +1380,8 @@ def parse_customization(cust_json: dict) -> dict:
 
             # Suede bag option dropdown — use option_val
             if any(kw in label for kw in _SUEDE_OPTION_LABELS):
-                if option_val and any(kw in option_val.lower() for kw in _SUEDE_YES_KEYWORDS):
-                    wants_suede = True
+                if option_val:
+                    _classify_suede(option_val)
                 continue
 
             # Sound block option dropdown — use option_val (or text as fallback)
@@ -1430,8 +1446,7 @@ def parse_customization(cust_json: dict) -> dict:
                     if any(kw in node_label for kw in _SB_OPTION_LABELS) and v:
                         sb_option = _classify_sb_option(v)
                     if any(kw in node_label for kw in _SUEDE_OPTION_LABELS) and v:
-                        if any(kw in v.lower() for kw in _SUEDE_YES_KEYWORDS):
-                            wants_suede = True
+                        _classify_suede(v)
 
                 for val in node.values():
                     walk(val, depth + 1)
@@ -1460,10 +1475,11 @@ def parse_customization(cust_json: dict) -> dict:
     return {
         "band_lines":  _split_nl(band_lines),
         "font":        font,
-        "sb_option":   sb_option,
-        "sb_lines":    _split_nl(sb_lines),
-        "sb_font":     sb_font,
-        "wants_suede": wants_suede,
+        "sb_option":          sb_option,
+        "sb_lines":           _split_nl(sb_lines),
+        "sb_font":            sb_font,
+        "wants_suede_gavel":  wants_suede_gavel,
+        "wants_suede_sb":     wants_suede_sb,
     }
 
 
@@ -1539,43 +1555,43 @@ def write_packing_slip(output_path: str, order_num: str, customer: str,
     print_date = _date.today().strftime("%m/%d/%Y")
 
     # ── Stamp detection ────────────────────────────────────────────────────────
-    # Sound block: flag if customization says engraved OR SKU ends with SB
-    has_soundblock = any(
-        i.get("want_sb") or _sku_has_soundblock(i.get("sku", ""))
+    has_sb_custom  = any(i.get("sb_option") == "custom_engraved" for i in slip_items)
+    has_sb_no      = any(
+        (i.get("sb_option") in ("no_engraving", "unknown") or _sku_has_soundblock(i.get("sku", "")))
+        and not i.get("want_sb")
         for i in slip_items
     )
-    # Suede bag: parsed from customization JSON; fall back to item name scan
-    has_suede = (
-        any(i.get("wants_suede") for i in slip_items)
+    has_suede_gavel = (
+        any(i.get("wants_suede_gavel") for i in slip_items)
         or _wants_suede(ship)
     )
-    has_gavel_only = any(i.get("sb_option") in ("gavel_only", "no_engraving") for i in slip_items)
+    has_suede_sb = any(i.get("wants_suede_sb") for i in slip_items)
 
     stamps = []
-    if has_soundblock:
-        stamps.append('<div class="stamp stamp-sb">+ Sound Block</div>')
-    if has_suede:
-        stamps.append('<div class="stamp stamp-suede">+ Suede Bag</div>')
-    if has_gavel_only:
-        stamps.append('<div class="stamp">Gavel Only</div>')
+    if has_sb_custom:
+        stamps.append('<div class="stamp stamp-sb">Sound Block — Custom</div>')
+    if has_sb_no:
+        stamps.append('<div class="stamp stamp-sb-no">Sound Block — NO</div>')
+    if has_suede_gavel:
+        stamps.append('<div class="stamp stamp-suede">Gavel Gift Bag</div>')
+    if has_suede_sb:
+        stamps.append('<div class="stamp stamp-suede">Sound Block Gift Bag</div>')
     stamp_html = "\n".join(stamps) if stamps else '<div class="no-stamp">No Special Instructions</div>'
 
     # ── Items table rows ───────────────────────────────────────────────────────
     rows_html = ""
     for it in slip_items:
         eng_lines = "".join(
-            f"<div class='eng-line'><span class='eng-num'>L{i}.</span> {_html_esc(ln)}</div>"
+            f"<div class='eng-line'><span class='eng-num'>L{i}:</span> {_html_esc(ln)}</div>"
             for i, ln in enumerate(it["text_lines"], 1)
         )
         sb_block = ""
         if it.get("want_sb") and it.get("sb_lines"):
-            sb_rows = "".join(
-                f"<div class='eng-line'><span class='eng-num'>SB{i}.</span> {_html_esc(ln)}</div>"
-                for i, ln in enumerate(it["sb_lines"], 1)
-            )
-            sb_block = f"""<div class="sb-section">
-              <div class="sb-label">Sound Block Engraving &nbsp;<span class="font-note">{_html_esc(it.get('sb_font',''))}</span></div>
-              {sb_rows}
+            sb_text = " / ".join(it["sb_lines"])
+            sb_block = f"""<div class="sb-divider">- - - - - - - - - - - - - - - - - - - - - - - - -</div>
+            <div class="sb-section">
+              <div class="sb-header">Sound Block: <span class="font-note">{_html_esc(it.get('sb_font',''))}</span></div>
+              <div class="eng-line"><span class="eng-num">Text:</span> {_html_esc(sb_text)}</div>
             </div>"""
         elif it.get("sb_font_error"):
             sb_block = f'<div class="sb-error">&#9888; Sound block skipped — font "{_html_esc(it["sb_font_error"])}" not found</div>'
@@ -1585,8 +1601,10 @@ def write_packing_slip(output_path: str, order_num: str, customer: str,
           <td class="detail-cell">
             <div class="item-name">{_html_esc(it.get('item_name') or it['sku'])}</div>
             <div class="item-meta"><b>SKU:</b> {_html_esc(it['sku'])}</div>
-            <div class="item-meta"><b>Engraving Font:</b> {_html_esc(it['font'])}</div>
-            <div class="eng-block">{eng_lines}</div>
+            <div class="eng-block">
+              <div class="eng-section-label">Gavel: <span class="font-note">{_html_esc(it['font'])}</span></div>
+              {eng_lines}
+            </div>
             {sb_block}
           </td>
         </tr>"""
@@ -1605,23 +1623,23 @@ def write_packing_slip(output_path: str, order_num: str, customer: str,
   html{{background:#fff}}
   body{{font-family:Arial,Helvetica,sans-serif;color:#000;background:#fff;font-size:8px;line-height:1.35}}
 
-  /* ── TOP HEADER: ship-to left, stamps right ── */
-  .top{{display:flex;justify-content:space-between;align-items:flex-start;
-        margin-bottom:5px;gap:8px}}
-  .ship-to-block{{flex:1;min-width:0}}
+  /* ── TOP HEADER: ship-to left, stamps right (table for xhtml2pdf compat) ── */
+  .top-table{{width:100%;border-collapse:collapse;margin-bottom:5px}}
+  .ship-to-cell{{vertical-align:top;width:62%}}
+  .stamps-cell{{vertical-align:top;width:38%;text-align:right}}
   .ship-to-label{{font-size:7px;margin-bottom:2px}}
   .ship-name{{font-size:10px;font-weight:700;line-height:1.3}}
   .ship-addr{{font-size:9px;font-weight:700;line-height:1.35}}
 
-  /* ── Stamps (replaces amazon.com logo) ── */
-  .stamps-block{{display:flex;flex-direction:column;gap:4px;align-items:flex-end;flex-shrink:0}}
+  /* ── Stamps ── */
   .stamp{{
-    display:inline-block;padding:4px 10px;
-    font-size:8px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;
-    border:3px solid #000;border-radius:2px;white-space:nowrap;background:#fff;
+    display:block;margin-bottom:3px;padding:4px 8px;
+    font-size:8px;font-weight:900;text-transform:uppercase;letter-spacing:.05em;
+    border:1px solid #000;border-radius:2px;background:#fff;color:#000;
     -webkit-print-color-adjust:exact;print-color-adjust:exact;
   }}
-  .stamp-sb{{border-color:#000;background:#000;color:#fff}}
+  .stamp-sb{{border-color:#000}}
+  .stamp-sb-no{{border-color:#000}}
   .stamp-suede{{border-color:#000}}
   .no-stamp{{font-size:7px;color:#777;font-style:italic}}
 
@@ -1652,16 +1670,16 @@ def write_packing_slip(output_path: str, order_num: str, customer: str,
   .detail-cell{{font-size:8px}}
   .item-name{{font-weight:700;font-size:8.5px;margin-bottom:2px}}
   .item-meta{{margin-bottom:1px;color:#333}}
-  .eng-block{{margin:3px 0 2px 0;padding-left:5px;border-left:2px solid #999}}
-  .eng-line{{margin-bottom:1px}}
-  .eng-num{{font-weight:700;color:#555;font-size:7px;display:inline-block;width:20px}}
+  .eng-block{{margin:3px 0 2px 0;padding-left:2px}}
+  .eng-section-label{{font-weight:700;font-size:7.5px;margin-bottom:2px}}
+  .eng-line{{margin-bottom:1px;font-size:9.5px;font-weight:700}}
+  .eng-num{{font-weight:700;color:#555;font-size:8px;display:inline-block;width:28px}}
 
   /* ── Sound block section ── */
-  .sb-section{{margin-top:4px;border:1px solid #000;border-left:4px solid #000;
-               padding:4px 5px;background:#f4f4f4;
-               -webkit-print-color-adjust:exact;print-color-adjust:exact}}
-  .sb-label{{font-weight:800;font-size:7px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px}}
-  .font-note{{font-style:italic;font-weight:400;text-transform:none;letter-spacing:0}}
+  .sb-divider{{font-size:7px;color:#777;letter-spacing:1px;margin:4px 0 3px 0;border:none;background:none}}
+  .sb-section{{margin-top:0;padding-left:0;border:none}}
+  .sb-header{{font-weight:700;font-size:7.5px;margin-bottom:2px}}
+  .font-note{{font-style:italic;font-weight:400;font-size:7px}}
   .sb-error{{margin-top:4px;border:1.5px dashed #000;padding:3px 5px;font-size:7px}}
 
   /* ── Footer ── */
@@ -1677,16 +1695,18 @@ def write_packing_slip(output_path: str, order_num: str, customer: str,
 <body>
 
 <!-- TOP: Ship To (left) | Stamps (right) -->
-<div class="top">
-  <div class="ship-to-block">
+<table class="top-table">
+<tr>
+  <td class="ship-to-cell">
     <div class="ship-to-label">Ship To:</div>
     <div class="ship-name">{_html_esc(customer)}</div>
     <div class="ship-addr">{addr1}</div>
     {"<div class='ship-addr'>" + addr2 + "</div>" if addr2 else ""}
     <div class="ship-addr">{city_line}</div>
-  </div>
-  <div class="stamps-block">{stamp_html}</div>
-</div>
+  </td>
+  <td class="stamps-cell">{stamp_html}</td>
+</tr>
+</table>
 
 <hr class="divider">
 
@@ -1907,7 +1927,8 @@ def main():
                 sb_option    = parsed["sb_option"]
                 sb_lines     = parsed["sb_lines"]
                 sb_font      = parsed["sb_font"]
-                wants_suede  = parsed["wants_suede"]
+                wants_suede_gavel = parsed["wants_suede_gavel"]
+                wants_suede_sb    = parsed["wants_suede_sb"]
 
                 if not text_lines:
                     raise ValueError("No text found in customization data")
@@ -1984,8 +2005,9 @@ def main():
                     "sb_option":     sb_option,
                     "sb_lines":      sb_lines if want_sb else [],
                     "sb_font":       effective_sb_font if want_sb else (sb_font or ""),
-                    "want_sb":       want_sb,
-                    "wants_suede":   wants_suede,
+                    "want_sb":            want_sb,
+                    "wants_suede_gavel":  wants_suede_gavel,
+                    "wants_suede_sb":     wants_suede_sb,
                     "sb_font_error": sb_font_error,
                 })
 
