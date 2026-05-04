@@ -644,6 +644,105 @@ def combined_gavel_layout():
         headers={"Content-Disposition": 'attachment; filename="combined_layout.svg"'})
 
 
+@app.route("/api/gavel-orders/combined-pdf", methods=["POST"])
+def combined_gavel_pdf():
+    import re as _re
+    from gavel_eps_generator import write_packing_slip, html_to_pdf
+    from flask import Response
+
+    body = request.json or {}
+    order_numbers = body.get("order_numbers", [])
+    if not order_numbers:
+        return jsonify({"error": "no order_numbers"}), 400
+
+    col = db().collection(GAVEL_ORDERS_COL)
+    slip_htmls: list[str] = []
+
+    for order_number in order_numbers:
+        docs_stream = col.where("order_number", "==", order_number).stream()
+        items_data  = [d.to_dict() for d in docs_stream]
+        items_data  = [d for d in items_data if d.get("status") != "cancelled"]
+        if not items_data:
+            continue
+        items_data.sort(key=lambda x: x.get("item_idx", 0))
+
+        first = items_data[0]
+        ship  = {
+            "orderNumber": order_number,
+            "orderDate":   first.get("order_date", ""),
+            "requestedShippingService": "",
+            "shipTo":      first.get("ship_to", {}),
+            "items":       [],
+        }
+        slip_items = []
+        for d in items_data:
+            slip_items.append({
+                "sku": d.get("sku", ""), "item_name": d.get("item_name", ""),
+                "qty": d.get("qty", 1), "font": d.get("font", "Arial"),
+                "text_lines": d.get("text_lines", []),
+                "sb_option": d.get("sb_option"), "sb_lines": d.get("sb_lines", []),
+                "sb_font": d.get("sb_font", "Arial"), "want_sb": d.get("want_sb", False),
+                "wants_suede_gavel": d.get("wants_suede_gavel", False),
+                "wants_suede_sb":    d.get("wants_suede_sb", False),
+                "sb_font_error": None,
+            })
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as h:
+            html_path = h.name
+        try:
+            write_packing_slip(html_path, order_number, first.get("customer", ""), ship, slip_items)
+            slip_htmls.append(open(html_path, "r", encoding="utf-8").read())
+        except Exception as e:
+            app.logger.warning(f"Slip generation failed for {order_number}: {e}")
+        finally:
+            try: os.unlink(html_path)
+            except: pass
+
+    if not slip_htmls:
+        return jsonify({"error": "no valid orders"}), 400
+
+    # ── Combine individual HTML pages into one document ──
+    if len(slip_htmls) == 1:
+        combined_html = slip_htmls[0]
+    else:
+        # Reuse <head> (styles) from the first slip; extract <body> from each
+        head_match = _re.search(r'<head[^>]*>.*?</head>', slip_htmls[0], _re.DOTALL | _re.IGNORECASE)
+        head_html  = head_match.group(0) if head_match else "<head><meta charset='UTF-8'></head>"
+
+        bodies = []
+        for html in slip_htmls:
+            m = _re.search(r'<body[^>]*>(.*?)</body>', html, _re.DOTALL | _re.IGNORECASE)
+            bodies.append(m.group(1).strip() if m else html)
+
+        page_break   = '\n<div style="page-break-after:always;"></div>\n'
+        combined_html = (
+            f'<!DOCTYPE html><html>\n{head_html}\n<body>\n'
+            + page_break.join(bodies)
+            + '\n</body></html>'
+        )
+
+    # ── Convert to PDF ──
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as h:
+        combined_html_path = h.name
+        h.write(combined_html)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as p:
+        pdf_path = p.name
+    try:
+        ok = html_to_pdf(combined_html_path, pdf_path)
+        if not ok:
+            return jsonify({"error": "PDF generation failed"}), 500
+        pdf_bytes = open(pdf_path, "rb").read()
+    finally:
+        for f in [combined_html_path, pdf_path]:
+            try: os.unlink(f)
+            except: pass
+
+    _log_download_async("Combined PDF", order_numbers,
+        notes=f"Combined PDF — {len(slip_htmls)} packing slip(s)")
+    return Response(pdf_bytes, mimetype="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="combined_workorders.pdf"'})
+
+
 def _log_download_async(file_type: str, order_numbers: list, notes: str = ""):
     """Fire-and-forget: write a download event to the run history."""
     def _run():

@@ -270,6 +270,9 @@
     <button class="btn btn-primary" id="layoutBtn" disabled onclick="doCombined()">
       Generate Layout
     </button>
+    <button class="btn btn-primary" id="slipsBtn" disabled onclick="doCombinedPDF()" style="background:#7c3aed;">
+      Print Slips
+    </button>
   </div>
 
   <div class="table-card">
@@ -564,15 +567,15 @@
   }
 
   function updateLayoutBtn() {
-    const btn = document.getElementById("layoutBtn");
     const n = selectedIds.size;
-    if (n === 0) {
-      btn.disabled = true;
-      btn.textContent = "Generate Layout";
-    } else {
-      btn.disabled = false;
-      btn.textContent = `Generate Layout (${n})`;
-    }
+
+    const layoutBtn = document.getElementById("layoutBtn");
+    layoutBtn.disabled = n === 0;
+    layoutBtn.textContent = n === 0 ? "Generate Layout" : `Generate Layout (${n})`;
+
+    const slipsBtn = document.getElementById("slipsBtn");
+    slipsBtn.disabled = n === 0;
+    slipsBtn.textContent = n === 0 ? "Print Slips" : `Print Slips (${n})`;
   }
 
   // ── Downloads ─────────────────────────────────────────────────────────────
@@ -621,6 +624,39 @@
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (err) {
       alert("Layout generation failed: " + err.message);
+    } finally {
+      updateLayoutBtn();
+    }
+  }
+
+  async function doCombinedPDF() {
+    const order_numbers = Array.from(selectedIds);
+    if (!order_numbers.length) return;
+    const btn = document.getElementById("slipsBtn");
+    btn.disabled = true;
+    btn.textContent = "Generating…";
+    try {
+      const res = await fetch("/api/gavel-orders/combined-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_numbers }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = "combined_workorders.pdf";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      alert("Packing slip generation failed: " + err.message);
     } finally {
       updateLayoutBtn();
     }
