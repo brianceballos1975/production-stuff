@@ -546,6 +546,8 @@ def download_order_svg(order_number):
         svg_content = build_layout_svg(layout_items)
 
     safe = order_number.replace("-", "")
+    _log_download_async("SVG", [order_number],
+        notes=f"SVG — {order_number} ({len(layout_items)} band(s))")
     return Response(svg_content, mimetype="image/svg+xml",
         headers={"Content-Disposition": f'attachment; filename="{safe}_band.svg"'})
 
@@ -595,6 +597,8 @@ def download_order_pdf(order_number):
             try: os.unlink(f)
             except: pass
     safe = order_number.replace("-", "")
+    _log_download_async("PDF", [order_number],
+        notes=f"PDF — {order_number} ({len(slip_items)} item(s))")
     return Response(pdf_bytes, mimetype="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{safe}_workorder.pdf"'})
 
@@ -634,8 +638,33 @@ def combined_gavel_layout():
     if not items:
         return jsonify({"error": "no valid items"}), 400
     svg = build_layout_svg(items)
+    _log_download_async("Combined SVG", order_numbers,
+        notes=f"Combined SVG — {len(order_numbers)} order(s), {len(items)} band(s)")
     return Response(svg, mimetype="image/svg+xml",
         headers={"Content-Disposition": 'attachment; filename="combined_layout.svg"'})
+
+
+def _log_download_async(file_type: str, order_numbers: list, notes: str = ""):
+    """Fire-and-forget: write a download event to the run history."""
+    def _run():
+        try:
+            run_id = str(uuid.uuid4())
+            now    = datetime.now(timezone.utc)
+            db().collection(RUNS_COL).document(run_id).set({
+                "id":            run_id,
+                "started_at":    now,
+                "finished_at":   now,
+                "status":        "success",
+                "trigger":       "download",
+                "log":           f"Downloaded {file_type} for: {', '.join(order_numbers)}",
+                "svgs":          0,
+                "errors":        0,
+                "order_numbers": list(order_numbers),
+                "notes":         notes or f"{file_type}: {', '.join(order_numbers)}",
+            })
+        except Exception as _e:
+            app.logger.warning(f"Download log failed: {_e}")
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _serial(d: dict) -> dict:

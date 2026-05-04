@@ -744,6 +744,7 @@ function renderHistory(runs) {
     const badge   = statusBadge(r.status);
     const trigger = r.trigger === 'scheduled' ? '🕐 Scheduled'
                   : r.trigger === 'sync'      ? '🔄 Sync'
+                  : r.trigger === 'download'  ? '⬇ Download'
                   :                             '👆 Manual';
     const notes   = escHtml(r.notes || '');
     const orders  = r.order_numbers || [];
@@ -762,7 +763,7 @@ function renderHistory(runs) {
       </td>
       <td style="white-space:nowrap;font-size:.8rem;color:var(--muted);">${trigger}</td>
       <td>${badge}</td>
-      <td style="font-weight:600;text-align:center;">${r.trigger === 'sync' ? (r.notes || '—') : (r.svgs ?? '—')}</td>
+      <td style="font-weight:600;text-align:center;">${(r.trigger === 'sync' || r.trigger === 'download') ? (r.notes || '—') : (r.svgs ?? '—')}</td>
       <td style="text-align:center;color:${r.errors > 0 ? 'var(--error)' : 'var(--muted)'};">${r.errors ?? '—'}</td>
       <td style="font-size:.78rem;color:var(--muted);">${dur}</td>
       <td style="min-width:160px;" onclick="event.stopPropagation()">
@@ -789,7 +790,7 @@ function renderHistory(runs) {
         <th>Date &amp; Time</th>
         <th>Trigger</th>
         <th>Status</th>
-        <th style="text-align:center;">SVGs / Synced</th>
+        <th style="text-align:center;">SVGs / Detail</th>
         <th style="text-align:center;">Errors</th>
         <th>Duration</th>
         <th>Notes</th>
